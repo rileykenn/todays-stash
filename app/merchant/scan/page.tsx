@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
@@ -10,21 +11,24 @@ type ScanResult = { ok: boolean; reason?: string } | null;
 export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
+  const handledRef = useRef(false);                 // <-- guard
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState<ScanResult>(null);
   const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID || '';
 
   useEffect(() => {
     return () => {
-      try {
-        (readerRef.current as any)?.reset?.();
-      } catch {}
+      try { (readerRef.current as any)?.reset?.(); } catch {}
+      // stop camera tracks on unmount (nice to have)
+      const stream = videoRef.current?.srcObject as MediaStream | undefined;
+      stream?.getTracks()?.forEach(t => t.stop());
     };
   }, []);
 
   const startScan = async () => {
     setResult(null);
     setScanning(true);
+    handledRef.current = false;                     // reset guard per session
     try {
       const { BrowserMultiFormatReader } = await import('@zxing/browser');
       const reader = new BrowserMultiFormatReader();
@@ -34,10 +38,15 @@ export default function ScanPage() {
         { video: { facingMode: { ideal: 'environment' } } },
         videoRef.current!,
         async (res: Result | undefined) => {
-          if (!res) return;
+          if (!res || handledRef.current) return;   // ignore duplicates
+          handledRef.current = true;
 
           const tokenText = res.getText();
-          (reader as any).reset?.();
+
+          // stop scanning immediately before RPC
+          try { (reader as any).reset?.(); } catch {}
+          const stream = videoRef.current?.srcObject as MediaStream | undefined;
+          stream?.getTracks()?.forEach(t => t.stop());
           setScanning(false);
 
           const { data, error } = await supabase.rpc('validate_scan', {
@@ -74,13 +83,7 @@ export default function ScanPage() {
       {!scanning && (
         <button
           onClick={startScan}
-          style={{
-            padding: '10px 14px',
-            borderRadius: 12,
-            background: '#10b981',
-            color: 'white',
-            fontWeight: 600,
-          }}
+          style={{ padding: '10px 14px', borderRadius: 12, background: '#10b981', color: 'white', fontWeight: 600 }}
         >
           {result ? 'Scan again' : 'Start scan'}
         </button>
@@ -108,12 +111,7 @@ export default function ScanPage() {
           )}
           <button
             onClick={scanAgain}
-            style={{
-              marginTop: 12,
-              padding: '8px 12px',
-              borderRadius: 10,
-              border: '1px solid #e5e7eb',
-            }}
+            style={{ marginTop: 12, padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
           >
             Scan another
           </button>
