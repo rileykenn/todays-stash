@@ -2,21 +2,22 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { BrowserMultiFormatReader } from '@zxing/browser';
+import { Result } from '@zxing/library';
 
 type ScanResult = { ok: boolean; reason?: string } | null;
 
 export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const readerRef = useRef<any>(null); // keep as any to avoid TS friction
+  const readerRef = useRef<BrowserMultiFormatReader | null>(null);
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState<ScanResult>(null);
   const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID || '';
 
-  // clean up on unmount
   useEffect(() => {
     return () => {
       try {
-        readerRef.current?.reset?.();
+        (readerRef.current as any)?.reset?.();
       } catch {}
     };
   }, []);
@@ -25,26 +26,20 @@ export default function ScanPage() {
     setResult(null);
     setScanning(true);
     try {
-      // dynamic import avoids SSR/window issues
       const { BrowserMultiFormatReader } = await import('@zxing/browser');
-      const reader: any = new BrowserMultiFormatReader();
+      const reader = new BrowserMultiFormatReader();
       readerRef.current = reader;
 
       await reader.decodeFromConstraints(
         { video: { facingMode: { ideal: 'environment' } } },
         videoRef.current!,
-        async (res: any) => {
+        async (res: Result | undefined) => {
           if (!res) return;
 
           const tokenText = res.getText();
-
-          // stop camera once we have a read
-          try {
-            reader.reset?.();
-          } catch {}
+          (reader as any).reset?.();
           setScanning(false);
 
-          // validate with Supabase
           const { data, error } = await supabase.rpc('validate_scan', {
             p_token: tokenText,
             p_merchant: merchantId,
@@ -56,8 +51,8 @@ export default function ScanPage() {
             return;
           }
 
-          const outcome = (data as any)?.outcome;
-          const reason = (data as any)?.reason;
+          const outcome = (data as { outcome: string; reason?: string })?.outcome;
+          const reason = (data as { outcome: string; reason?: string })?.reason;
           setResult({ ok: outcome === 'accepted', reason });
         }
       );
@@ -79,7 +74,13 @@ export default function ScanPage() {
       {!scanning && (
         <button
           onClick={startScan}
-          style={{ padding: '10px 14px', borderRadius: 12, background: '#10b981', color: 'white', fontWeight: 600 }}
+          style={{
+            padding: '10px 14px',
+            borderRadius: 12,
+            background: '#10b981',
+            color: 'white',
+            fontWeight: 600,
+          }}
         >
           {result ? 'Scan again' : 'Start scan'}
         </button>
@@ -107,7 +108,12 @@ export default function ScanPage() {
           )}
           <button
             onClick={scanAgain}
-            style={{ marginTop: 12, padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+            style={{
+              marginTop: 12,
+              padding: '8px 12px',
+              borderRadius: 10,
+              border: '1px solid #e5e7eb',
+            }}
           >
             Scan another
           </button>
