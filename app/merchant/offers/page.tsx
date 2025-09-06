@@ -16,8 +16,8 @@ type Offer = {
 
 export default function MerchantOffersList() {
   const router = useRouter();
-  const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID!;
   const [loading, setLoading] = useState(true);
+  const [merchantId, setMerchantId] = useState<string | null>(null);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -25,21 +25,41 @@ export default function MerchantOffersList() {
     let mounted = true;
 
     async function init() {
+      // must be signed in to view merchant offers
       const { data: { session } } = await sb.auth.getSession();
       if (!session) {
         router.replace('/merchant/login');
         return;
       }
-      await loadOffers();
+
+      // fetch merchant tied to this user (via RPC)
+      const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
+      if (mErr) {
+        setError(mErr.message);
+        setLoading(false);
+        return;
+      }
+      if (!mid) {
+        // no merchant linked to this account
+        setMerchantId(null);
+        setOffers([]);
+        setLoading(false);
+        return;
+      }
+
+      if (!mounted) return;
+      setMerchantId(mid as string);
+      await loadOffers(mid as string);
     }
 
-    async function loadOffers() {
+    async function loadOffers(mid: string) {
       setLoading(true);
       setError(null);
+
       const { data, error } = await sb
         .from('offers')
         .select('id,title,terms,per_day_cap,today_used,active,photo_url')
-        .eq('merchant_id', merchantId)
+        .eq('merchant_id', mid)
         .order('id', { ascending: false });
 
       if (!mounted) return;
@@ -77,6 +97,19 @@ export default function MerchantOffersList() {
       <main style={{ maxWidth: 900, margin: '32px auto', padding: 16 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>My Deals</h1>
         <div>Loading…</div>
+      </main>
+    );
+  }
+
+  // No merchant linked to this user account
+  if (!merchantId) {
+    return (
+      <main style={{ maxWidth: 900, margin: '32px auto', padding: 16 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>My Deals</h1>
+        <div style={{ padding: 12, borderRadius: 8, background: '#fef3c7', color: '#92400e' }}>
+          This account isn’t linked to a merchant yet. Ask an admin to add you to <code>merchant_staff</code>, or
+          create a merchant profile.
+        </div>
       </main>
     );
   }
