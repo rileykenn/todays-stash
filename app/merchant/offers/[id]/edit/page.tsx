@@ -18,18 +18,19 @@ export default function EditOfferPage() {
   const router = useRouter();
   const params = useParams();
   const id = String(params?.id || '');
-  const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID!;
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [merchantId, setMerchantId] = useState<string | null>(null);
+  const [merchantPhoto, setMerchantPhoto] = useState<string | null>(null);
 
   const [title, setTitle] = useState('');
   const [terms, setTerms] = useState<string>('');
   const [cap, setCap] = useState<number>(10);
   const [active, setActive] = useState<boolean>(true);
 
-  const [merchantPhoto, setMerchantPhoto] = useState<string | null>(null);
   const [currentPhoto, setCurrentPhoto] = useState<string | null>(null);
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(false);
   const [file, setFile] = useState<File | null>(null);
@@ -37,26 +38,29 @@ export default function EditOfferPage() {
   useEffect(() => {
     let mounted = true;
     async function init() {
+      // must be signed in to edit
       const { data: { session } } = await sb.auth.getSession();
       if (!session) {
         router.replace('/merchant/login');
         return;
       }
-      await loadData();
-    }
 
-    async function loadData() {
-      setLoading(true);
-      setError(null);
+      // which merchant is this user tied to?
+      const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
+      if (mErr) { setError(mErr.message); setLoading(false); return; }
+      if (!mid) { setError('No merchant linked to this account.'); setLoading(false); return; }
+
+      const merchant_id = mid as string;
 
       const [{ data: offer, error: e1 }, { data: merchant, error: e2 }] = await Promise.all([
         sb.from('offers')
           .select('id,merchant_id,title,terms,per_day_cap,active,photo_url')
           .eq('id', id)
+          .eq('merchant_id', merchant_id) // ensure offer belongs to THIS merchant
           .single(),
         sb.from('merchants')
           .select('photo_url')
-          .eq('id', merchantId)
+          .eq('id', merchant_id)
           .single(),
       ]);
 
@@ -65,13 +69,14 @@ export default function EditOfferPage() {
       if (!offer) { setError('Offer not found'); setLoading(false); return; }
 
       if (mounted) {
+        setMerchantId(merchant_id);
+        const mPhoto = merchant?.photo_url ?? null;
+        setMerchantPhoto(mPhoto);
+
         setTitle(offer.title || '');
         setTerms(offer.terms || '');
         setCap(typeof offer.per_day_cap === 'number' ? offer.per_day_cap : 10);
         setActive(offer.active ?? true);
-
-        const mPhoto = merchant?.photo_url ?? null;
-        setMerchantPhoto(mPhoto);
         setCurrentPhoto(offer.photo_url ?? null);
         setUseBizPhoto(!!mPhoto && offer.photo_url === mPhoto);
         setLoading(false);
@@ -89,7 +94,7 @@ export default function EditOfferPage() {
   }, [useBizPhoto, merchantPhoto, file, currentPhoto]);
 
   async function save() {
-    if (!id) return;
+    if (!id || !merchantId) return;
     setSaving(true);
     setError(null);
 
@@ -99,6 +104,7 @@ export default function EditOfferPage() {
       if (useBizPhoto) {
         photo_url = merchantPhoto ?? null;
       } else if (file) {
+        // store under merchant-media/<merchantId>/offers/<offerId>.jpg
         const path = `${merchantId}/offers/${id}.jpg`;
         const { error: upErr } = await sb
           .storage
@@ -120,7 +126,8 @@ export default function EditOfferPage() {
       const { error: updErr } = await sb
         .from('offers')
         .update(updates)
-        .eq('id', id);
+        .eq('id', id)
+        .eq('merchant_id', merchantId); // double guard
       if (updErr) throw updErr;
 
       router.replace('/merchant/offers');
