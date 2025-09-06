@@ -59,6 +59,9 @@ export default function MerchantHome() {
         <a href="/merchant/scan" style={{ padding: '10px 14px', border: '1px solid #e5e7eb', borderRadius: 10 }}>
           Open Scanner
         </a>
+        <a href="/merchant/offers" style={{ padding: '10px 14px', borderRadius: 10, background: '#3b82f6', color: '#fff', fontWeight: 600 }}>
+          My Deals
+        </a>
         <a href="/consumer" style={{ padding: '10px 14px', border: '1px solid #e5e7eb', borderRadius: 10 }}>
           View Consumer Page
         </a>
