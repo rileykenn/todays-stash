@@ -8,11 +8,12 @@ type MerchantLite = { name: string; photo_url: string | null } | null;
 
 type Offer = {
   id: string;
+  merchant_id: string;            // ✅ added
   title: string;
   terms: string | null;
   per_day_cap: number | null;
   today_used: number | null;
-  photo_url: string | null;   // ✅ added
+  photo_url: string | null;
   merchants?: MerchantLite;
 };
 
@@ -28,13 +29,12 @@ export default function ConsumerPage() {
   const tickRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID!;
-
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
       .select(`
         id,
+        merchant_id,              -- ✅ added
         title,
         terms,
         per_day_cap,
@@ -42,8 +42,7 @@ export default function ConsumerPage() {
         photo_url,
         merchants ( name, photo_url )
       `)
-      .eq('merchant_id', merchantId)
-      .eq('active', true);
+      .eq('active', true);        // ✅ show ALL active offers (no merchant filter)
 
     if (error) {
       console.error(error);
@@ -53,23 +52,24 @@ export default function ConsumerPage() {
 
     const rows: Offer[] = (data ?? []).map((r: any) => ({
       id: r.id,
+      merchant_id: r.merchant_id,     // ✅ keep merchant for RPC
       title: r.title,
       terms: r.terms ?? null,
       per_day_cap: r.per_day_cap ?? null,
       today_used: r.today_used ?? null,
-      photo_url: r.photo_url ?? null,   // ✅ pass photo_url
+      photo_url: r.photo_url ?? null,
       merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
     }));
 
     setOffers(rows);
   }
 
-  useEffect(() => { loadOffers(); }, [merchantId]);
+  useEffect(() => { loadOffers(); }, []);
 
-  async function generateAndStartTimer(offerId: string) {
+  async function generateAndStartTimer(offer: Offer) {
     const { data, error } = await supabase.rpc('create_redeem_session', {
-      p_offer: offerId,
-      p_merchant: merchantId,
+      p_offer: offer.id,
+      p_merchant: offer.merchant_id,  // ✅ use offer’s merchant
       p_device: 'browser',
       p_ttl_seconds: TTL_SECONDS,
     });
@@ -89,15 +89,27 @@ export default function ConsumerPage() {
       setCountdown(secs);
       if (secs <= 0) {
         if (tickRef.current) clearInterval(tickRef.current);
-        if (activeOfferId) generateAndStartTimer(activeOfferId);
+        if (activeOfferId) {
+          const again = offers.find(o => o.id === activeOfferId);
+          if (again) generateAndStartTimer(again);
+        }
       }
     }, 250);
   }
 
-  async function startSession(offerId: string) {
-    setActiveOfferId(offerId);
-    await generateAndStartTimer(offerId);
+  async function startSession(offer: Offer) {
+    // ✅ Require sign-in only when generating QR
+    const { data: { session } } = await supabase.auth.getSession();
+    if (!session) {
+      // send to login, then back to consumer page afterward
+      window.location.href = '/merchant/login?next=/consumer';
+      return;
+    }
+
+    setActiveOfferId(offer.id);
+    await generateAndStartTimer(offer);
     if (pollRef.current) clearInterval(pollRef.current);
+    // keep “Left today” fresh while a session is active
     pollRef.current = window.setInterval(loadOffers, 10_000);
   }
 
@@ -151,7 +163,7 @@ export default function ConsumerPage() {
 
             {!isActive ? (
               <button
-                onClick={() => startSession(o.id)}
+                onClick={() => startSession(o)}   // ✅ pass full offer
                 style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#10b981', color: 'white', fontWeight: 600 }}
               >
                 Show QR
@@ -170,7 +182,10 @@ export default function ConsumerPage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, color: '#6b7280' }}>
                       <span>Rotates in: <strong>{countdown}s</strong></span>
                       <button
-                        onClick={() => activeOfferId && generateAndStartTimer(activeOfferId)}
+                        onClick={() => {
+                          const current = offers.find(o2 => o2.id === activeOfferId!);
+                          if (current) generateAndStartTimer(current);
+                        }}
                         style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb' }}
                       >
                         Refresh QR
