@@ -12,6 +12,7 @@ type Offer = {
   terms: string | null;
   per_day_cap: number | null;
   today_used: number | null;
+  photo_url: string | null;   // ✅ added
   merchants?: MerchantLite;
 };
 
@@ -38,6 +39,7 @@ export default function ConsumerPage() {
         terms,
         per_day_cap,
         today_used,
+        photo_url,
         merchants ( name, photo_url )
       `)
       .eq('merchant_id', merchantId)
@@ -55,6 +57,7 @@ export default function ConsumerPage() {
       terms: r.terms ?? null,
       per_day_cap: r.per_day_cap ?? null,
       today_used: r.today_used ?? null,
+      photo_url: r.photo_url ?? null,   // ✅ pass photo_url
       merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
     }));
 
@@ -95,7 +98,6 @@ export default function ConsumerPage() {
     setActiveOfferId(offerId);
     await generateAndStartTimer(offerId);
     if (pollRef.current) clearInterval(pollRef.current);
-    // keep “Left today” fresh while a session is active
     pollRef.current = window.setInterval(loadOffers, 10_000);
   }
 
@@ -134,13 +136,14 @@ export default function ConsumerPage() {
               background: '#fff',
             }}
           >
-            {o.merchants?.photo_url && (
+            {(o.photo_url || o.merchants?.photo_url) && (
               <img
-                src={o.merchants.photo_url}
-                alt={o.merchants?.name ?? 'Business photo'}
+                src={o.photo_url || o.merchants?.photo_url || ''}
+                alt={o.merchants?.name ?? 'Deal photo'}
                 style={{ width: '100%', maxWidth: 320, borderRadius: 12, marginBottom: 12, objectFit: 'cover' }}
               />
             )}
+
             <h2 style={{ fontSize: 20, fontWeight: 600 }}>{o.title}</h2>
             <p style={{ color: '#6b7280' }}>{o.merchants?.name ?? ''}</p>
             {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
