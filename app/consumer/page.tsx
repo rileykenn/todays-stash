@@ -29,7 +29,6 @@ export default function ConsumerPage() {
 
   const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID!;
 
-  // ---- Load offers
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
@@ -62,16 +61,41 @@ export default function ConsumerPage() {
     setOffers(rows);
   }
 
-  useEffect(() => {
-    loadOffers();
-  }, [merchantId]);
+  useEffect(() => { loadOffers(); }, [merchantId]);
 
-  // ---- Start / rotate token every TTL_SECONDS
+  async function generateAndStartTimer(offerId: string) {
+    const { data, error } = await supabase.rpc('create_redeem_session', {
+      p_offer: offerId,
+      p_merchant: merchantId,
+      p_device: 'browser',
+      p_ttl_seconds: TTL_SECONDS,
+    });
+    if (error) { console.error(error); return; }
+
+    const tok = data as string;
+    setToken(tok);
+
+    const exp = Date.now() + TTL_SECONDS * 1000;
+    setExpiresAt(exp);
+    setCountdown(TTL_SECONDS);
+
+    if (tickRef.current) clearInterval(tickRef.current);
+    tickRef.current = window.setInterval(() => {
+      const target = expiresAt ?? exp;
+      const secs = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+      setCountdown(secs);
+      if (secs <= 0) {
+        if (tickRef.current) clearInterval(tickRef.current);
+        if (activeOfferId) generateAndStartTimer(activeOfferId);
+      }
+    }, 250);
+  }
+
   async function startSession(offerId: string) {
     setActiveOfferId(offerId);
     await generateAndStartTimer(offerId);
-    // start polling offers while a session is active (keeps "left today" fresh)
     if (pollRef.current) clearInterval(pollRef.current);
+    // keep “Left today” fresh while a session is active
     pollRef.current = window.setInterval(loadOffers, 10_000);
   }
 
@@ -82,36 +106,6 @@ export default function ConsumerPage() {
     setCountdown(0);
     if (tickRef.current) clearInterval(tickRef.current);
     if (pollRef.current) clearInterval(pollRef.current);
-  }
-
-  async function generateAndStartTimer(offerId: string) {
-    const { data, error } = await supabase.rpc('create_redeem_session', {
-      p_offer: offerId,
-      p_merchant: merchantId,
-      p_device: 'browser',
-      p_ttl_seconds: TTL_SECONDS,
-    });
-    if (error) {
-      console.error(error);
-      return;
-    }
-    const tok = data as string;
-    setToken(tok);
-
-    const exp = Date.now() + TTL_SECONDS * 1000;
-    setExpiresAt(exp);
-    setCountdown(TTL_SECONDS);
-
-    if (tickRef.current) clearInterval(tickRef.current);
-    tickRef.current = window.setInterval(() => {
-      const secs = Math.max(0, Math.ceil(((expiresAt ?? exp) - Date.now()) / 1000));
-      setCountdown(secs);
-      // when expired, rotate immediately
-      if (secs <= 0) {
-        if (tickRef.current) clearInterval(tickRef.current);
-        if (activeOfferId) generateAndStartTimer(activeOfferId);
-      }
-    }, 250);
   }
 
   useEffect(() => {
@@ -160,21 +154,29 @@ export default function ConsumerPage() {
                 Show QR
               </button>
             ) : (
-              <button
-                onClick={stopSession}
-                style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#ef4444', color: 'white', fontWeight: 600 }}
-              >
-                Stop
-              </button>
-            )}
+              <>
+                <button
+                  onClick={stopSession}
+                  style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#ef4444', color: 'white', fontWeight: 600 }}
+                >
+                  Stop
+                </button>
 
-            {isActive && token && (
-              <div style={{ marginTop: 12 }}>
-                <div style={{ marginBottom: 8, color: '#6b7280' }}>
-                  Rotates in: <strong>{countdown}s</strong>
-                </div>
-                <QRCode value={token} size={180} />
-              </div>
+                {token && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, color: '#6b7280' }}>
+                      <span>Rotates in: <strong>{countdown}s</strong></span>
+                      <button
+                        onClick={() => activeOfferId && generateAndStartTimer(activeOfferId)}
+                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb' }}
+                      >
+                        Refresh QR
+                      </button>
+                    </div>
+                    <QRCode value={token} size={180} />
+                  </div>
+                )}
+              </>
             )}
           </div>
         );
