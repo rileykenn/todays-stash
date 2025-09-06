@@ -2,35 +2,77 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { useRouter } from 'next/navigation';
+import { sb } from '@/lib/supabaseBrowser';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Result } from '@zxing/library';
 
 type ScanResult = { ok: boolean; reason?: string } | null;
 
 export default function ScanPage() {
+  const router = useRouter();
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
-  const handledRef = useRef(false);                 // <-- guard
+  const handledRef = useRef(false);
+
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState<ScanResult>(null);
-  const merchantId = process.env.NEXT_PUBLIC_MERCHANT_ID || '';
+  const [error, setError] = useState<string | null>(null);
+  const [merchantId, setMerchantId] = useState<string | null>(null);
 
+  // Require merchant sign-in + fetch this account's merchant via RPC
   useEffect(() => {
+    let mounted = true;
+
+    async function init() {
+      const { data: { session } } = await sb.auth.getSession();
+      if (!session) {
+        router.replace('/merchant/login');
+        return;
+      }
+
+      const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
+      if (mErr) {
+        setError(mErr.message);
+        return;
+      }
+      if (!mid) {
+        setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
+        return;
+      }
+
+      if (mounted) setMerchantId(mid as string);
+    }
+
+    init();
+
+    // keep session fresh
+    const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
+      if (!session) router.replace('/merchant/login');
+    });
+
     return () => {
+      mounted = false;
+      sub.subscription.unsubscribe();
       try { (readerRef.current as any)?.reset?.(); } catch {}
-      // stop camera tracks on unmount (nice to have)
       const stream = videoRef.current?.srcObject as MediaStream | undefined;
       stream?.getTracks()?.forEach(t => t.stop());
     };
-  }, []);
+  }, [router]);
 
   const startScan = async () => {
+    if (!merchantId) {
+      setError('Merchant not ready yet. Please wait a moment and try again.');
+      return;
+    }
+
+    setError(null);
     setResult(null);
     setScanning(true);
-    handledRef.current = false;                     // reset guard per session
+    handledRef.current = false;
+
     try {
-      const { BrowserMultiFormatReader } = await import('@zxing/browser');
       const reader = new BrowserMultiFormatReader();
       readerRef.current = reader;
 
@@ -38,7 +80,7 @@ export default function ScanPage() {
         { video: { facingMode: { ideal: 'environment' } } },
         videoRef.current!,
         async (res: Result | undefined) => {
-          if (!res || handledRef.current) return;   // ignore duplicates
+          if (!res || handledRef.current) return; // ignore duplicates
           handledRef.current = true;
 
           const tokenText = res.getText();
@@ -49,9 +91,9 @@ export default function ScanPage() {
           stream?.getTracks()?.forEach(t => t.stop());
           setScanning(false);
 
-          const { data, error } = await supabase.rpc('validate_scan', {
+          const { data, error } = await sb.rpc('validate_scan', {
             p_token: tokenText,
-            p_merchant: merchantId,
+            p_merchant: merchantId, // ✅ scoped to signed-in merchant
           });
 
           if (error) {
@@ -68,6 +110,7 @@ export default function ScanPage() {
     } catch (e) {
       console.error(e);
       setScanning(false);
+      setError('Camera error. Please check permissions and try again.');
     }
   };
 
@@ -80,9 +123,16 @@ export default function ScanPage() {
     <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Merchant Scanner</h1>
 
+      {error && (
+        <div style={{ padding: 12, borderRadius: 10, background: '#fef3c7', color: '#92400e', marginBottom: 12 }}>
+          {error}
+        </div>
+      )}
+
       {!scanning && (
         <button
           onClick={startScan}
+          disabled={!merchantId}
           style={{ padding: '10px 14px', borderRadius: 12, background: '#10b981', color: 'white', fontWeight: 600 }}
         >
           {result ? 'Scan again' : 'Start scan'}
