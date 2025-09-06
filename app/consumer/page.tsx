@@ -8,7 +8,7 @@ type MerchantLite = { name: string; photo_url: string | null } | null;
 
 type Offer = {
   id: string;
-  merchant_id: string;            // ✅ added
+  merchant_id: string;
   title: string;
   terms: string | null;
   per_day_cap: number | null;
@@ -34,7 +34,7 @@ export default function ConsumerPage() {
       .from('offers')
       .select(`
         id,
-        merchant_id,              -- ✅ added
+        merchant_id,
         title,
         terms,
         per_day_cap,
@@ -42,7 +42,8 @@ export default function ConsumerPage() {
         photo_url,
         merchants ( name, photo_url )
       `)
-      .eq('active', true);        // ✅ show ALL active offers (no merchant filter)
+      // ✅ include both active=true and active=null
+      .or('active.is.true,active.is.null');
 
     if (error) {
       console.error(error);
@@ -52,7 +53,7 @@ export default function ConsumerPage() {
 
     const rows: Offer[] = (data ?? []).map((r: any) => ({
       id: r.id,
-      merchant_id: r.merchant_id,     // ✅ keep merchant for RPC
+      merchant_id: r.merchant_id,
       title: r.title,
       terms: r.terms ?? null,
       per_day_cap: r.per_day_cap ?? null,
@@ -69,7 +70,7 @@ export default function ConsumerPage() {
   async function generateAndStartTimer(offer: Offer) {
     const { data, error } = await supabase.rpc('create_redeem_session', {
       p_offer: offer.id,
-      p_merchant: offer.merchant_id,  // ✅ use offer’s merchant
+      p_merchant: offer.merchant_id,
       p_device: 'browser',
       p_ttl_seconds: TTL_SECONDS,
     });
@@ -98,10 +99,9 @@ export default function ConsumerPage() {
   }
 
   async function startSession(offer: Offer) {
-    // ✅ Require sign-in only when generating QR
+    // ✅ Only prompt login when showing QR
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
-      // send to login, then back to consumer page afterward
       window.location.href = '/merchant/login?next=/consumer';
       return;
     }
@@ -109,7 +109,6 @@ export default function ConsumerPage() {
     setActiveOfferId(offer.id);
     await generateAndStartTimer(offer);
     if (pollRef.current) clearInterval(pollRef.current);
-    // keep “Left today” fresh while a session is active
     pollRef.current = window.setInterval(loadOffers, 10_000);
   }
 
@@ -133,6 +132,10 @@ export default function ConsumerPage() {
     <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Today’s Deals</h1>
 
+      {offers.length === 0 && (
+        <p style={{ color: '#6b7280' }}>No deals available right now.</p>
+      )}
+
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
         const isActive = activeOfferId === o.id;
@@ -149,6 +152,7 @@ export default function ConsumerPage() {
             }}
           >
             {(o.photo_url || o.merchants?.photo_url) && (
+              // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={o.photo_url || o.merchants?.photo_url || ''}
                 alt={o.merchants?.name ?? 'Deal photo'}
@@ -163,7 +167,7 @@ export default function ConsumerPage() {
 
             {!isActive ? (
               <button
-                onClick={() => startSession(o)}   // ✅ pass full offer
+                onClick={() => startSession(o)}
                 style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#10b981', color: 'white', fontWeight: 600 }}
               >
                 Show QR
