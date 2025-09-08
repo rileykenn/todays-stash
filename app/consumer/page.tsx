@@ -26,7 +26,7 @@ const TTL_SECONDS = 90;
 
 export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
-  const [remaining, setRemaining] = useState<number | null>(null);
+  const [remaining, setRemaining] = useState<number | null>(null); // server-only
   const [modalOpen, setModalOpen] = useState(false);
   const [modalOffer, setModalOffer] = useState<Offer | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -34,9 +34,8 @@ export default function ConsumerPage() {
   const [countdown, setCountdown] = useState(0);
 
   const tickRef = useRef<number | null>(null);
-  const pollRef = useRef<number | null>(null);
 
-  // ---- Load offers ----
+  // ---- load active offers ----
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
@@ -64,14 +63,15 @@ export default function ConsumerPage() {
     }
   }
 
-  // ---- Get freebies left (server only) ----
+  // ---- freebies from server ----
   async function fetchRemaining() {
     const { data, error } = await sb.rpc('get_free_remaining');
     if (!error && data) {
       const r = Number((data as any)?.remaining ?? 0);
       setRemaining(Number.isFinite(r) ? r : 0);
-      // sync with nav badge
-      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
+      window.dispatchEvent(
+        new CustomEvent('ts:free-used-updated', { detail: data }),
+      );
     }
   }
 
@@ -79,29 +79,12 @@ export default function ConsumerPage() {
     loadOffers();
     fetchRemaining();
 
-    const onBadge = (e: any) => {
-      const r = Number(e?.detail?.remaining);
-      if (Number.isFinite(r)) setRemaining(r);
-    };
-    window.addEventListener('ts:free-used-updated', onBadge);
-
     const onFocus = () => fetchRemaining();
     window.addEventListener('focus', onFocus);
-
-    return () => {
-      window.removeEventListener('ts:free-used-updated', onBadge);
-      window.removeEventListener('focus', onFocus);
-    };
+    return () => window.removeEventListener('focus', onFocus);
   }, []);
 
-  // ---- Timer helpers ----
-  function stopTimers() {
-    if (tickRef.current) clearInterval(tickRef.current);
-    if (pollRef.current) clearInterval(pollRef.current);
-    tickRef.current = null;
-    pollRef.current = null;
-  }
-
+  // ---- QR session ----
   async function generateAndStartTimer(offer: Offer) {
     const { data, error } = await sb.rpc('start_redeem_session', {
       p_offer: offer.id,
@@ -141,16 +124,23 @@ export default function ConsumerPage() {
     }, 250);
   }
 
-  // ---- Actions ----
+  // ---- actions ----
   async function startSession(offer: Offer) {
+    // must be signed in
     const { data: { session } } = await sb.auth.getSession();
     if (!session) {
       window.location.href = '/signup';
       return;
     }
 
-    await fetchRemaining();
-    if (remaining !== null && remaining <= 0) {
+    // hard check server freebies right now
+    const { data, error } = await sb.rpc('get_free_remaining');
+    if (error || !data) {
+      alert('Could not check your freebies. Try again.');
+      return;
+    }
+    const rem = Number((data as any)?.remaining ?? 0);
+    if (rem <= 0) {
       window.location.href = '/upgrade';
       return;
     }
@@ -166,10 +156,8 @@ export default function ConsumerPage() {
     setToken(null);
     setExpiresAt(null);
     setCountdown(0);
-    stopTimers();
+    if (tickRef.current) clearInterval(tickRef.current);
   }
-
-  useEffect(() => () => stopTimers(), []);
 
   // ---- UI ----
   return (
