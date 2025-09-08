@@ -7,6 +7,7 @@ import { sb } from '@/lib/supabaseBrowser';
 import { BrowserMultiFormatReader } from '@zxing/browser';
 import { Result } from '@zxing/library';
 
+type RpcValidateResult = { outcome: 'accepted' | 'rejected'; reason?: string };
 type ScanResult = { ok: boolean; reason?: string } | null;
 
 export default function ScanPage() {
@@ -21,7 +22,7 @@ export default function ScanPage() {
   const [error, setError] = useState<string | null>(null);
   const [merchantId, setMerchantId] = useState<string | null>(null);
 
-  // Require merchant sign-in + fetch this account's merchant via RPC
+  // Load session + merchant id
   useEffect(() => {
     let mounted = true;
 
@@ -34,26 +35,24 @@ export default function ScanPage() {
 
       const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
       if (mErr) {
-        setError(mErr.message);
+        if (mounted) setError(mErr.message);
         return;
       }
       if (!mid) {
-        setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
+        if (mounted) setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
         return;
       }
-
       if (mounted) setMerchantId(mid as string);
     }
 
     init();
 
-    // keep session fresh
-    const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
-      if (!session) router.replace('/merchant/login');
+    // Keep session fresh / redirect if signed out
+    const { data: sub } = sb.auth.onAuthStateChange((_e, s) => {
+      if (!s) router.replace('/merchant/login');
     });
 
     return () => {
-      mounted = false;
       sub.subscription.unsubscribe();
       try { (readerRef.current as any)?.reset?.(); } catch {}
       const stream = videoRef.current?.srcObject as MediaStream | undefined;
@@ -61,6 +60,7 @@ export default function ScanPage() {
     };
   }, [router]);
 
+  // Start camera + scanner
   const startScan = async () => {
     if (!merchantId) {
       setError('Merchant not ready yet. Please wait a moment and try again.');
@@ -80,34 +80,41 @@ export default function ScanPage() {
         { video: { facingMode: { ideal: 'environment' } } },
         videoRef.current!,
         async (res: Result | undefined) => {
-          if (!res || handledRef.current) return; // ignore duplicates
+          if (!res || handledRef.current) return;
           handledRef.current = true;
 
           const tokenText = res.getText();
 
-          // stop scanning immediately before RPC
+          // Stop camera before hitting RPC
           try { (reader as any).reset?.(); } catch {}
           const stream = videoRef.current?.srcObject as MediaStream | undefined;
           stream?.getTracks()?.forEach(t => t.stop());
           setScanning(false);
 
-          const { data, error } = await sb.rpc('validate_scan', {
+          const { data, error: rpcErr } = await sb.rpc('validate_scan', {
             p_token: tokenText,
-            p_merchant: merchantId, // ✅ scoped to signed-in merchant
+            p_merchant: merchantId,
           });
 
-          if (error) {
-            console.error(error);
-            setResult({ ok: false, reason: 'error' });
+          if (rpcErr) {
+            console.error('validate_scan RPC error:', rpcErr);
+            setResult({ ok: false, reason: rpcErr.message || 'rpc_error' });
             return;
           }
 
-          const outcome = (data as { outcome: string; reason?: string })?.outcome;
-          const reason = (data as { outcome: string; reason?: string })?.reason;
-          setResult({ ok: outcome === 'accepted', reason });
+          if (!data) {
+            setResult({ ok: false, reason: 'no_data' });
+            return;
+          }
+
+          const { outcome, reason } = data as RpcValidateResult;
+          setResult({
+            ok: outcome === 'accepted',
+            reason: outcome === 'accepted' ? undefined : (reason ?? 'unknown'),
+          });
         }
       );
-    } catch (e) {
+    } catch (e: unknown) {
       console.error(e);
       setScanning(false);
       setError('Camera error. Please check permissions and try again.');
@@ -140,7 +147,7 @@ export default function ScanPage() {
       )}
 
       <div style={{ marginTop: 16 }}>
-        <video ref={videoRef} style={{ width: '100%', borderRadius: 16 }} />
+        <video ref={videoRef} autoPlay muted playsInline style={{ width: '100%', borderRadius: 16 }} />
       </div>
 
       {result && (
@@ -157,7 +164,9 @@ export default function ScanPage() {
             {result.ok ? 'Accepted ✅' : 'Rejected ❌'}
           </div>
           {!result.ok && result.reason && (
-            <div style={{ marginTop: 6, color: '#6b7280' }}>Reason: {result.reason}</div>
+            <div style={{ marginTop: 6, color: '#6b7280' }}>
+              Reason: <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{result.reason}</span>
+            </div>
           )}
           <button
             onClick={scanAgain}
@@ -167,6 +176,10 @@ export default function ScanPage() {
           </button>
         </div>
       )}
+
+      <p style={{ marginTop: 12, color: '#6b7280', fontSize: 12 }}>
+        Tip: If you keep seeing <code>expired</code>, bump the token TTL to 120s while testing.
+      </p>
     </main>
   );
 }
