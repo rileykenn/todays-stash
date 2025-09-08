@@ -1,7 +1,8 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { supabase } from '@/lib/supabaseClient';
+import { supabase } from '@/lib/supabaseClient';     // public/anon client for browsing offers
+import { sb } from '@/lib/supabaseBrowser';          // auth-persisted browser client
 import QRCode from 'react-qr-code';
 import Modal from '@/components/Modal';
 
@@ -29,6 +30,7 @@ export default function ConsumerPage() {
   const tickRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
+  // ---- data loading ----
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
@@ -38,7 +40,11 @@ export default function ConsumerPage() {
       `)
       .or('active.is.true,active.is.null')
       .order('id', { ascending: false });
-    if (error) { console.error(error); return; }
+
+    if (error) {
+      console.error(error);
+      return;
+    }
 
     const rows = (data || []).map((r: any) => ({
       id: r.id,
@@ -49,12 +55,16 @@ export default function ConsumerPage() {
       today_used: r.today_used ?? null,
       photo_url: r.photo_url ?? null,
       merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
-    }));
+    })) as Offer[];
+
     setOffers(rows);
   }
 
-  useEffect(() => { loadOffers(); }, []);
+  useEffect(() => {
+    loadOffers();
+  }, []);
 
+  // ---- helpers for timers / badge ----
   function stopTimers() {
     if (tickRef.current) clearInterval(tickRef.current);
     if (pollRef.current) clearInterval(pollRef.current);
@@ -62,16 +72,33 @@ export default function ConsumerPage() {
     pollRef.current = null;
   }
 
+  async function refreshFreeLeftBadge() {
+    try {
+      const { data } = await sb.rpc('get_free_remaining');
+      // Let the layout refetch/refresh its badge
+      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
+    } catch {
+      // ignore
+    }
+  }
+
   async function generateAndStartTimer(offer: Offer) {
-    const { data, error } = await supabase.rpc('create_redeem_session', {
+    // server-enforced allowance + session creator
+    const { data, error } = await sb.rpc('start_redeem_session', {
       p_offer: offer.id,
       p_merchant: offer.merchant_id,
       p_device: 'browser',
       p_ttl_seconds: TTL_SECONDS,
     });
-    if (error) { console.error(error); return; }
 
-    const tok = data as string;
+    if (error) {
+      alert(error.message.includes('weekly_limit_reached')
+        ? 'You have used your free deals for this week.'
+        : `Could not start session: ${error.message}`);
+      return;
+    }
+
+    const tok = String(data);
     setToken(tok);
 
     const exp = Date.now() + TTL_SECONDS * 1000;
@@ -80,36 +107,36 @@ export default function ConsumerPage() {
 
     if (tickRef.current) clearInterval(tickRef.current);
     tickRef.current = window.setInterval(() => {
-      const now = Date.now();
-      const target = exp;
-      const secs = Math.max(0, Math.ceil((target - now) / 1000));
+      const secs = Math.max(0, Math.ceil(((expiresAt ?? exp) - Date.now()) / 1000));
       setCountdown(secs);
       if (secs <= 0) {
-        if (tickRef.current) clearInterval(tickRef.current);
+        clearInterval(tickRef.current!);
+        tickRef.current = null;
         if (modalOffer) generateAndStartTimer(modalOffer);
       }
     }, 250);
   }
 
+  // ---- actions ----
   async function startSession(offer: Offer) {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) { window.location.href = '/merchant/login?next=/consumer'; return; }
-
-    // MVP client-side weekly free counter
-    try {
-      const key = 'ts:free-left';
-      const left = Number(localStorage.getItem(key) ?? '2');
-      localStorage.setItem(key, String(Math.max(0, left - 1)));
-      window.dispatchEvent(new CustomEvent('ts:free-used-updated'));
-    } catch {}
+    const { data: { session } } = await sb.auth.getSession();
+    if (!session) {
+      window.location.href = '/signup'; // new signup page
+      return;
+    }
 
     setModalOffer(offer);
     setModalOpen(true);
-    await generateAndStartTimer(offer);
 
-    // keep “Left today” fresh while modal is open
-    stopTimers();
-    pollRef.current = window.setInterval(loadOffers, 10_000);
+    await generateAndStartTimer(offer);
+    await refreshFreeLeftBadge(); // immediate update
+
+    // While modal is open, keep “Left today” and badge fresh
+    if (pollRef.current) clearInterval(pollRef.current);
+    pollRef.current = window.setInterval(async () => {
+      await loadOffers();
+      await refreshFreeLeftBadge();
+    }, 10_000);
   }
 
   function closeModal() {
@@ -123,6 +150,7 @@ export default function ConsumerPage() {
 
   useEffect(() => () => stopTimers(), []);
 
+  // ---- UI ----
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
       <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Today’s Deals</h1>
@@ -132,8 +160,10 @@ export default function ConsumerPage() {
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
         return (
-          <div key={o.id}
-               style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 16, background: '#fff' }}>
+          <div
+            key={o.id}
+            style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 16, background: '#fff' }}
+          >
             {(o.photo_url || o.merchants?.photo_url) && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
@@ -149,7 +179,15 @@ export default function ConsumerPage() {
 
             <button
               onClick={() => startSession(o)}
-              style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#10b981', color: 'white', fontWeight: 600 }}>
+              style={{
+                marginTop: 8,
+                padding: '8px 12px',
+                borderRadius: 8,
+                background: '#10b981',
+                color: 'white',
+                fontWeight: 600,
+              }}
+            >
               Show QR
             </button>
           </div>
@@ -160,19 +198,36 @@ export default function ConsumerPage() {
         <div style={{ display: 'grid', gap: 10 }}>
           <p style={{ color: '#374151' }}>
             Go to <strong>{modalOffer?.merchants?.name ?? 'the store'}</strong>
-            {modalOffer?.merchants?.address_text ? <> at <strong>{modalOffer.merchants.address_text}</strong></> : null}
-            {' '}and ask a friendly staff member to scan your QR in the Today’s Stash merchant app.
+            {modalOffer?.merchants?.address_text ? (
+              <>
+                {' '}at <strong>{modalOffer.merchants.address_text}</strong>
+              </>
+            ) : null}{' '}
+            and ask a friendly staff member to scan your QR in the Today’s Stash merchant app.
           </p>
-          <div style={{ display: 'grid', placeItems: 'center', padding: 12, border: '1px dashed #e5e7eb', borderRadius: 12 }}>
+
+          <div
+            style={{
+              display: 'grid',
+              placeItems: 'center',
+              padding: 12,
+              border: '1px dashed #e5e7eb',
+              borderRadius: 12,
+            }}
+          >
             {token ? <QRCode value={token} size={200} /> : <div>Generating…</div>}
           </div>
+
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
             <div style={{ fontSize: 14, color: '#6b7280' }}>
               Expires in <strong>{Math.max(0, countdown)}</strong>s
             </div>
             <button
-              onClick={() => { if (modalOffer) generateAndStartTimer(modalOffer); }}
-              style={{ marginLeft: 'auto', padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}>
+              onClick={() => {
+                if (modalOffer) generateAndStartTimer(modalOffer);
+              }}
+              style={{ marginLeft: 'auto', padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+            >
               Refresh QR
             </button>
           </div>
