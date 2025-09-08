@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 import { supabase } from '@/lib/supabaseClient';     // public/anon client for browsing offers
 import { sb } from '@/lib/supabaseBrowser';          // auth-persisted browser client
 import QRCode from 'react-qr-code';
@@ -26,6 +27,9 @@ export default function ConsumerPage() {
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [countdown, setCountdown] = useState(0);
+
+  // NEW: freebies remaining (lifetime)
+  const [remaining, setRemaining] = useState<number | null>(null);
 
   const tickRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
@@ -62,7 +66,23 @@ export default function ConsumerPage() {
 
   useEffect(() => {
     loadOffers();
+    refreshRemaining();
   }, []);
+
+  // ---- freebies remaining ----
+  async function refreshRemaining() {
+    try {
+      const { data, error } = await sb.rpc('get_free_remaining');
+      if (error) return;
+      const r = Number((data as any)?.remaining ?? 0);
+      setRemaining(Number.isFinite(r) ? r : 0);
+
+      // keep the layout badge in sync
+      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
+    } catch {
+      // ignore
+    }
+  }
 
   // ---- helpers for timers / badge ----
   function stopTimers() {
@@ -70,16 +90,6 @@ export default function ConsumerPage() {
     if (pollRef.current) clearInterval(pollRef.current);
     tickRef.current = null;
     pollRef.current = null;
-  }
-
-  async function refreshFreeLeftBadge() {
-    try {
-      const { data } = await sb.rpc('get_free_remaining');
-      // Let the layout refetch/refresh its badge
-      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
-    } catch {
-      // ignore
-    }
   }
 
   async function generateAndStartTimer(offer: Offer) {
@@ -92,9 +102,12 @@ export default function ConsumerPage() {
     });
 
     if (error) {
-      alert(error.message.includes('weekly_limit_reached')
-        ? 'You have used your free deals for this week.'
-        : `Could not start session: ${error.message}`);
+      if (error.message.includes('free_limit_reached')) {
+        // hard stop: send to upgrade page
+        window.location.href = '/upgrade';
+        return;
+      }
+      alert(`Could not start session: ${error.message}`);
       return;
     }
 
@@ -129,13 +142,13 @@ export default function ConsumerPage() {
     setModalOpen(true);
 
     await generateAndStartTimer(offer);
-    await refreshFreeLeftBadge(); // immediate update
+    await refreshRemaining(); // immediate update
 
     // While modal is open, keep “Left today” and badge fresh
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = window.setInterval(async () => {
       await loadOffers();
-      await refreshFreeLeftBadge();
+      await refreshRemaining();
     }, 10_000);
   }
 
@@ -153,12 +166,20 @@ export default function ConsumerPage() {
   // ---- UI ----
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Today’s Deals</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 700 }}>Today’s Deals</h1>
+        <span style={{ marginLeft: 'auto', color: '#6b7280', fontSize: 14 }}>
+          Free deals left:{' '}
+          <strong>{remaining === null ? '—' : Math.max(0, remaining)}</strong>
+        </span>
+      </div>
 
       {offers.length === 0 && <p style={{ color: '#6b7280' }}>No deals available right now.</p>}
 
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
+        const showUpgrade = remaining !== null && remaining <= 0;
+
         return (
           <div
             key={o.id}
@@ -177,19 +198,36 @@ export default function ConsumerPage() {
             {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
             <p style={{ marginTop: 8 }}>Left today: {leftToday}</p>
 
-            <button
-              onClick={() => startSession(o)}
-              style={{
-                marginTop: 8,
-                padding: '8px 12px',
-                borderRadius: 8,
-                background: '#10b981',
-                color: 'white',
-                fontWeight: 600,
-              }}
-            >
-              Show QR
-            </button>
+            {showUpgrade ? (
+              <Link
+                href="/upgrade"
+                style={{
+                  display: 'inline-flex',
+                  marginTop: 8,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #e5e7eb',
+                  color: '#111827',
+                  textDecoration: 'none',
+                }}
+              >
+                Upgrade for more deals
+              </Link>
+            ) : (
+              <button
+                onClick={() => startSession(o)}
+                style={{
+                  marginTop: 8,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  background: '#10b981',
+                  color: 'white',
+                  fontWeight: 600,
+                }}
+              >
+                Show QR
+              </button>
+            )}
           </div>
         );
       })}
