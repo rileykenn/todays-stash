@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabaseClient';     // public/anon client for browsing offers
-import { sb } from '@/lib/supabaseBrowser';          // auth-persisted browser client
+import { supabase } from '@/lib/supabaseClient';     // public/anon for offers
+import { sb } from '@/lib/supabaseBrowser';          // authed client for RPCs
 import QRCode from 'react-qr-code';
 import Modal from '@/components/Modal';
 
@@ -22,19 +22,17 @@ const TTL_SECONDS = 90;
 
 export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
+  const [remaining, setRemaining] = useState<number | null>(null); // from server only
   const [modalOpen, setModalOpen] = useState(false);
   const [modalOffer, setModalOffer] = useState<Offer | null>(null);
   const [token, setToken] = useState<string | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [countdown, setCountdown] = useState(0);
 
-  // NEW: freebies remaining (lifetime)
-  const [remaining, setRemaining] = useState<number | null>(null);
-
   const tickRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  // ---- data loading ----
+  // ---- load active offers ----
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
@@ -45,46 +43,45 @@ export default function ConsumerPage() {
       .or('active.is.true,active.is.null')
       .order('id', { ascending: false });
 
-    if (error) {
-      console.error(error);
-      return;
+    if (!error && data) {
+      const rows = (data || []).map((r: any) => ({
+        id: r.id,
+        merchant_id: r.merchant_id,
+        title: r.title,
+        terms: r.terms ?? null,
+        per_day_cap: r.per_day_cap ?? null,
+        today_used: r.today_used ?? null,
+        photo_url: r.photo_url ?? null,
+        merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
+      })) as Offer[];
+      setOffers(rows);
     }
+  }
 
-    const rows = (data || []).map((r: any) => ({
-      id: r.id,
-      merchant_id: r.merchant_id,
-      title: r.title,
-      terms: r.terms ?? null,
-      per_day_cap: r.per_day_cap ?? null,
-      today_used: r.today_used ?? null,
-      photo_url: r.photo_url ?? null,
-      merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
-    })) as Offer[];
-
-    setOffers(rows);
+  // ---- server freebies (authoritative) ----
+  async function fetchRemaining() {
+    const { data, error } = await sb.rpc('get_free_remaining');
+    if (!error && data) {
+      const r = Number((data as any)?.remaining ?? 0);
+      setRemaining(Number.isFinite(r) ? r : 0);
+    }
   }
 
   useEffect(() => {
     loadOffers();
-    refreshRemaining();
+    fetchRemaining();
+
+    // stay in sync with the nav badge (it emits this after it refreshes from server)
+    const onBadge = (e: any) => {
+      const r = Number(e?.detail?.remaining);
+      if (Number.isFinite(r)) setRemaining(r);
+      else fetchRemaining(); // fallback to server
+    };
+    window.addEventListener('ts:free-used-updated', onBadge);
+    return () => window.removeEventListener('ts:free-used-updated', onBadge);
   }, []);
 
-  // ---- freebies remaining ----
-  async function refreshRemaining() {
-    try {
-      const { data, error } = await sb.rpc('get_free_remaining');
-      if (error) return;
-      const r = Number((data as any)?.remaining ?? 0);
-      setRemaining(Number.isFinite(r) ? r : 0);
-
-      // keep the layout badge in sync
-      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
-    } catch {
-      // ignore
-    }
-  }
-
-  // ---- helpers for timers / badge ----
+  // ---- timer helpers ----
   function stopTimers() {
     if (tickRef.current) clearInterval(tickRef.current);
     if (pollRef.current) clearInterval(pollRef.current);
@@ -93,7 +90,6 @@ export default function ConsumerPage() {
   }
 
   async function generateAndStartTimer(offer: Offer) {
-    // server-enforced allowance + session creator
     const { data, error } = await sb.rpc('start_redeem_session', {
       p_offer: offer.id,
       p_merchant: offer.merchant_id,
@@ -103,7 +99,6 @@ export default function ConsumerPage() {
 
     if (error) {
       if (error.message.includes('free_limit_reached')) {
-        // hard stop: send to upgrade page
         window.location.href = '/upgrade';
         return;
       }
@@ -132,9 +127,17 @@ export default function ConsumerPage() {
 
   // ---- actions ----
   async function startSession(offer: Offer) {
+    // ensure logged in
     const { data: { session } } = await sb.auth.getSession();
     if (!session) {
-      window.location.href = '/signup'; // new signup page
+      window.location.href = '/signup';
+      return;
+    }
+
+    // double-check with server right before action
+    await fetchRemaining();
+    if (remaining !== null && remaining <= 0) {
+      window.location.href = '/upgrade';
       return;
     }
 
@@ -142,13 +145,12 @@ export default function ConsumerPage() {
     setModalOpen(true);
 
     await generateAndStartTimer(offer);
-    await refreshRemaining(); // immediate update
 
-    // While modal is open, keep “Left today” and badge fresh
+    // keep offers fresh + nav badge will also refresh itself and emit event
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = window.setInterval(async () => {
       await loadOffers();
-      await refreshRemaining();
+      await fetchRemaining();
     }, 10_000);
   }
 
@@ -166,19 +168,13 @@ export default function ConsumerPage() {
   // ---- UI ----
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
-        <h1 style={{ fontSize: 24, fontWeight: 700 }}>Today’s Deals</h1>
-        <span style={{ marginLeft: 'auto', color: '#6b7280', fontSize: 14 }}>
-          Free deals left:{' '}
-          <strong>{remaining === null ? '—' : Math.max(0, remaining)}</strong>
-        </span>
-      </div>
+      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Today’s Deals</h1>
 
       {offers.length === 0 && <p style={{ color: '#6b7280' }}>No deals available right now.</p>}
 
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
-        const showUpgrade = remaining !== null && remaining <= 0;
+        const mustUpgrade = remaining !== null && remaining <= 0;
 
         return (
           <div
@@ -193,12 +189,13 @@ export default function ConsumerPage() {
                 style={{ width: '100%', maxWidth: 320, borderRadius: 12, marginBottom: 12, objectFit: 'cover' }}
               />
             )}
+
             <h2 style={{ fontSize: 20, fontWeight: 600 }}>{o.title}</h2>
             <p style={{ color: '#6b7280' }}>{o.merchants?.name ?? ''}</p>
             {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
             <p style={{ marginTop: 8 }}>Left today: {leftToday}</p>
 
-            {showUpgrade ? (
+            {mustUpgrade ? (
               <Link
                 href="/upgrade"
                 style={{
@@ -237,9 +234,7 @@ export default function ConsumerPage() {
           <p style={{ color: '#374151' }}>
             Go to <strong>{modalOffer?.merchants?.name ?? 'the store'}</strong>
             {modalOffer?.merchants?.address_text ? (
-              <>
-                {' '}at <strong>{modalOffer.merchants.address_text}</strong>
-              </>
+              <> at <strong>{modalOffer.merchants.address_text}</strong></>
             ) : null}{' '}
             and ask a friendly staff member to scan your QR in the Today’s Stash merchant app.
           </p>
