@@ -9,6 +9,7 @@ function MerchantApplyPage() {
   const [abn, setAbn] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState(''); // NEW
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -18,28 +19,58 @@ function MerchantApplyPage() {
     e.preventDefault();
     setError(null);
     setSuccess(null);
+
+    // quick client-side password check (keeps the demo smooth)
+    if (password.length < 6) {
+      setError('Please enter a password with at least 6 characters.');
+      return;
+    }
+
     setLoading(true);
-
     try {
-      const { data: sessionRes } = await sb.auth.getSession();
-      let userId = sessionRes.session?.user?.id ?? null;
+      // ensure we have an authenticated user
+      let {
+        data: { session },
+      } = await sb.auth.getSession();
 
-      // if user not logged in, sign them up by email (magic link)
-      if (!userId) {
-        const { data: sign, error: signErr } = await sb.auth.signUp({
+      if (!session) {
+        // Try to sign up first (with password)
+        const signUpRes = await sb.auth.signUp({
           email,
+          password,
           options: {
             data: { full_name: fullName, role: 'merchant_applicant' },
             emailRedirectTo: `${window.location.origin}/merchant`,
           },
-        } as any); // <-- cast fixes the TS password error
+        });
 
-        if (signErr) throw signErr;
-        userId = sign.user?.id ?? null;
+        if (signUpRes.error) {
+          // If the user already exists, try sign-in instead
+          if (
+            signUpRes.error.message?.toLowerCase().includes('already registered') ||
+            signUpRes.error.message?.toLowerCase().includes('user already exists')
+          ) {
+            const signInRes = await sb.auth.signInWithPassword({ email, password });
+            if (signInRes.error) throw signInRes.error;
+          } else {
+            throw signUpRes.error;
+          }
+        }
+
+        // refresh session after sign-up/sign-in
+        const g = await sb.auth.getSession();
+        session = g.data.session;
       }
 
-      // insert into merchant_applications table
-      const { error: insErr } = await sb.from('merchant_applications').insert({
+      const userId = session?.user?.id ?? null;
+      if (!userId) {
+        // If your project enforces email confirmation, you might not get a session yet.
+        // For the demo, fail loudly so it’s clear what to change in Supabase Auth settings.
+        throw new Error('Please verify your email, then try submitting again.');
+      }
+
+      // Insert application tied to this auth user
+      const ins = await sb.from('merchant_applications').insert({
         user_id: userId,
         contact_name: fullName,
         business_name: businessName,
@@ -48,10 +79,11 @@ function MerchantApplyPage() {
         email,
         status: 'pending',
       });
-      if (insErr) throw insErr;
+
+      if (ins.error) throw ins.error;
 
       setSuccess(
-        'Application submitted. Check your email to confirm your account. An admin will review and approve your business.'
+        'Application submitted. We’ll review and enable your merchant dashboard.'
       );
     } catch (err: any) {
       setError(err?.message ?? 'Something went wrong');
@@ -85,49 +117,66 @@ function MerchantApplyPage() {
           <input
             required
             value={fullName}
-            onChange={e => setFullName(e.target.value)}
+            onChange={(e) => setFullName(e.target.value)}
             placeholder="Jane Smith"
             style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
           />
         </label>
+
         <label style={{ display: 'grid', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>Business name</span>
           <input
             required
             value={businessName}
-            onChange={e => setBusinessName(e.target.value)}
+            onChange={(e) => setBusinessName(e.target.value)}
             placeholder="Smith’s Coffee Co."
             style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
           />
         </label>
+
         <label style={{ display: 'grid', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>ABN</span>
           <input
             required
             value={abn}
-            onChange={e => setAbn(e.target.value)}
+            onChange={(e) => setAbn(e.target.value)}
             placeholder="11 111 111 111"
             style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
           />
         </label>
+
         <label style={{ display: 'grid', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>Personal phone number</span>
           <input
             required
             value={phone}
-            onChange={e => setPhone(e.target.value)}
+            onChange={(e) => setPhone(e.target.value)}
             placeholder="+61…"
             style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
           />
         </label>
+
         <label style={{ display: 'grid', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>Personal email address</span>
           <input
             type="email"
             required
             value={email}
-            onChange={e => setEmail(e.target.value)}
+            onChange={(e) => setEmail(e.target.value)}
             placeholder="you@example.com"
+            style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
+          />
+        </label>
+
+        {/* NEW: password field */}
+        <label style={{ display: 'grid', gap: 6 }}>
+          <span style={{ fontWeight: 600 }}>Create a password</span>
+          <input
+            type="password"
+            required
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="At least 6 characters"
             style={{ padding: 10, border: '1px solid #e5e7eb', borderRadius: 10 }}
           />
         </label>
