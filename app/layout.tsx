@@ -1,136 +1,105 @@
-// app/layout.tsx
+/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
-import './globals.css';
-import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 import { sb } from '@/lib/supabaseBrowser';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const [email, setEmail] = useState<string | null>(null);
-  const [hasMerchant, setHasMerchant] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
-  const [freeLeft, setFreeLeft] = useState<number | null>(null);
+  const [remaining, setRemaining] = useState<number | null>(null);
 
-  async function refreshBadges() {
-    const { data: { session } } = await sb.auth.getSession();
-    const userEmail = session?.user?.email ?? null;
-    setEmail(userEmail);
-
-    // role flags
-    sb.rpc('get_my_merchant').then(({ data }) => setHasMerchant(!!data));
-    sb.rpc('is_admin').then(({ data }) => setIsAdmin(!!data));
-
-    // server-side weekly allowance (only when logged in)
-    if (userEmail) {
-      const { data } = await sb.rpc('get_free_remaining');
-      setFreeLeft(data?.[0]?.remaining ?? 0);
-    } else {
-      setFreeLeft(null);
+  // --- helpers ---
+  async function fetchRemainingAuthoritative() {
+    const { data, error } = await sb.rpc('get_free_remaining');
+    if (!error && data) {
+      const r = Number((data as any)?.remaining ?? 0);
+      setRemaining(Number.isFinite(r) ? r : 0);
     }
   }
 
+  // --- init: wait for session, then fetch; keep in sync afterwards ---
   useEffect(() => {
-    let mounted = true;
-    refreshBadges();
+    (async () => {
+      const { data: { session } } = await sb.auth.getSession();
+      setEmail(session?.user?.email ?? null);
+      if (session) await fetchRemainingAuthoritative();
+    })();
 
-    // react to auth changes
-    const { data: sub } = sb.auth.onAuthStateChange(() => {
-      if (mounted) refreshBadges();
+    // when auth changes, refresh badge
+    const sub = sb.auth.onAuthStateChange(async (_e, s) => {
+      setEmail(s?.user?.email ?? null);
+      if (s) await fetchRemainingAuthoritative();
+      else setRemaining(null);
     });
 
-    // (optional) react to client-side decrement events if you still emit them
-    const onFreeUsed = () => refreshBadges();
-    window.addEventListener('ts:free-used-updated', onFreeUsed);
+    // when any page emits our update event, refetch from server
+    const onBump = () => fetchRemainingAuthoritative();
+    window.addEventListener('ts:free-used-updated', onBump);
+
+    // keep fresh on tab focus
+    const onFocus = () => fetchRemainingAuthoritative();
+    window.addEventListener('focus', onFocus);
 
     return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-      window.removeEventListener('ts:free-used-updated', onFreeUsed);
+      sub.data.subscription.unsubscribe();
+      window.removeEventListener('ts:free-used-updated', onBump);
+      window.removeEventListener('focus', onFocus);
     };
   }, []);
 
-  const linkStyle: React.CSSProperties = {
-    padding: '8px 12px',
-    borderRadius: 10,
-    border: '1px solid #e5e7eb',
-    textDecoration: 'none',
-  };
-
-  async function signOut() {
-    await sb.auth.signOut();
-    window.location.reload();
-  }
-
   return (
     <html lang="en">
-      <body>
-        <header style={{ borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
-          <nav
-            style={{
-              maxWidth: 980,
-              margin: '0 auto',
-              padding: '12px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}
-          >
-            <Link
-              href="/consumer"
-              style={{ fontWeight: 800, fontSize: 18, textDecoration: 'none', color: '#111827', marginRight: 8 }}
-            >
-              Today’s Stash
-            </Link>
+      <body style={{ background: '#0b0b0b', color: '#e5e7eb' }}>
+        {/* NAV */}
+        <nav style={{
+          display: 'flex', alignItems: 'center', gap: 12,
+          maxWidth: 1100, margin: '12px auto', padding: '8px 12px'
+        }}>
+          <Link href="/" style={{ fontWeight: 800, color: '#fff', textDecoration: 'none' }}>
+            Today’s Stash
+          </Link>
 
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Link href="/consumer" style={linkStyle}>Deals</Link>
-              {hasMerchant && <Link href="/merchant" style={linkStyle}>Merchant</Link>}
-              {isAdmin && (
-                <Link href="/admin" style={{ ...linkStyle, background: '#111827', color: '#fff' }}>
-                  Admin Dashboard
-                </Link>
-              )}
-            </div>
+          <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+            {/* Freebies badge (authoritative) */}
+            <span style={{
+              background: '#eef2ff', color: '#4338ca', padding: '6px 10px',
+              borderRadius: 999, fontSize: 14, fontWeight: 700
+            }}>
+              Free deals left: {remaining === null ? '—' : Math.max(0, remaining)}
+            </span>
 
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-              {email && freeLeft !== null && (
-                <span
-                  style={{
-                    padding: '6px 10px',
-                    borderRadius: 999,
-                    background: '#eef2ff',
-                    color: '#3730a3',
-                    fontSize: 13,
-                    fontWeight: 600,
-                  }}
-                >
-                  Free deals left: {freeLeft}
-                </span>
-              )}
+            {/* Upgrade CTA when exhausted */}
+            {remaining !== null && remaining <= 0 && (
+              <Link
+                href="/upgrade"
+                style={{
+                  padding: '6px 10px',
+                  borderRadius: 999,
+                  border: '1px solid #e5e7eb',
+                  color: '#111827',
+                  background: '#fff',
+                  textDecoration: 'none',
+                  fontWeight: 700
+                }}
+              >
+                Upgrade for unlimited deals
+              </Link>
+            )}
 
-              {email ? (
-                <>
-                  <span style={{ color: '#6b7280', fontSize: 14 }}>
-                    Signed in: <strong>{email}</strong>
-                  </span>
-                  <button
-                    onClick={signOut}
-                    style={{ padding: '8px 12px', borderRadius: 10, background: '#f3f4f6', border: '1px solid #e5e7eb' }}
-                  >
-                    Sign out
-                  </button>
-                </>
-              ) : (
-                <Link href="/signup" style={{ ...linkStyle, background: '#111827', color: '#fff' }}>
-                  Sign up
-                </Link>
-              )}
-            </div>
-          </nav>
-        </header>
+            {/* Auth display */}
+            {email ? (
+              <span style={{ color: '#d1d5db', fontSize: 14 }}>Signed in: {email}</span>
+            ) : (
+              <Link href="/signup" style={{ color: '#fff', textDecoration: 'none' }}>
+                Sign up
+              </Link>
+            )}
+          </div>
+        </nav>
 
-        <main>{children}</main>
+        {/* PAGE */}
+        <div style={{ maxWidth: 1100, margin: '0 auto' }}>{children}</div>
       </body>
     </html>
   );
