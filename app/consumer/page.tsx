@@ -3,8 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import QRCode from 'react-qr-code';
+import Modal from '@/components/Modal';
 
-type MerchantLite = { name: string; photo_url: string | null } | null;
+type MerchantLite = { name: string; photo_url: string | null; /* optional: address_text?: string | null */ } | null;
 
 type Offer = {
   id: string;
@@ -23,6 +24,8 @@ export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [activeOfferId, setActiveOfferId] = useState<string | null>(null);
   const [token, setToken] = useState<string | null>(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [modalOffer, setModalOffer] = useState<Offer | null>(null);
   const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [countdown, setCountdown] = useState<number>(0);
 
@@ -40,18 +43,13 @@ export default function ConsumerPage() {
         per_day_cap,
         today_used,
         photo_url,
-        merchants ( name, photo_url )
+        merchants:merchants!inner(name,photo_url)
       `)
-      // ✅ include both active=true and active=null
-      .or('active.is.true,active.is.null');
+      .or('active.is.true,active.is.null')
+      .order('id', { ascending: false });
 
-    if (error) {
-      console.error(error);
-      setOffers([]);
-      return;
-    }
-
-    const rows: Offer[] = (data ?? []).map((r: any) => ({
+    if (error) { console.error(error); return; }
+    const rows = (data || []).map((r: any) => ({
       id: r.id,
       merchant_id: r.merchant_id,
       title: r.title,
@@ -86,7 +84,8 @@ export default function ConsumerPage() {
     if (tickRef.current) clearInterval(tickRef.current);
     tickRef.current = window.setInterval(() => {
       const target = expiresAt ?? exp;
-      const secs = Math.max(0, Math.ceil((target - Date.now()) / 1000));
+      const now = Date.now();
+      const secs = Math.max(0, Math.ceil((target - now) / 1000));
       setCountdown(secs);
       if (secs <= 0) {
         if (tickRef.current) clearInterval(tickRef.current);
@@ -99,14 +98,24 @@ export default function ConsumerPage() {
   }
 
   async function startSession(offer: Offer) {
-    // ✅ Only prompt login when showing QR
+    // login only when needed
     const { data: { session } } = await supabase.auth.getSession();
     if (!session) {
       window.location.href = '/merchant/login?next=/consumer';
       return;
     }
 
+    // (MVP) weekly free counter in localStorage
+    try {
+      const key = 'ts:free-left';
+      const left = Number(localStorage.getItem(key) ?? '2');
+      localStorage.setItem(key, String(Math.max(0, left - 1)));
+      window.dispatchEvent(new CustomEvent('ts:free-used-updated'));
+    } catch {}
+
     setActiveOfferId(offer.id);
+    setModalOffer(offer);
+    setModalOpen(true);
     await generateAndStartTimer(offer);
     if (pollRef.current) clearInterval(pollRef.current);
     pollRef.current = window.setInterval(loadOffers, 10_000);
@@ -138,8 +147,6 @@ export default function ConsumerPage() {
 
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
-        const isActive = activeOfferId === o.id;
-
         return (
           <div
             key={o.id}
@@ -165,44 +172,40 @@ export default function ConsumerPage() {
             {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
             <p style={{ marginTop: 8 }}>Left today: {leftToday}</p>
 
-            {!isActive ? (
-              <button
-                onClick={() => startSession(o)}
-                style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#10b981', color: 'white', fontWeight: 600 }}
-              >
-                Show QR
-              </button>
-            ) : (
-              <>
-                <button
-                  onClick={stopSession}
-                  style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#ef4444', color: 'white', fontWeight: 600 }}
-                >
-                  Stop
-                </button>
-
-                {token && (
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8, color: '#6b7280' }}>
-                      <span>Rotates in: <strong>{countdown}s</strong></span>
-                      <button
-                        onClick={() => {
-                          const current = offers.find(o2 => o2.id === activeOfferId!);
-                          if (current) generateAndStartTimer(current);
-                        }}
-                        style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #e5e7eb', background: '#f9fafb' }}
-                      >
-                        Refresh QR
-                      </button>
-                    </div>
-                    <QRCode value={token} size={180} />
-                  </div>
-                )}
-              </>
-            )}
+            <button
+              onClick={() => startSession(o)}
+              style={{ marginTop: 8, padding: '8px 12px', borderRadius: 8, background: '#10b981', color: 'white', fontWeight: 600 }}
+            >
+              Show QR
+            </button>
           </div>
         );
       })}
+
+      <Modal open={modalOpen && !!token} onClose={() => { setModalOpen(false); stopSession(); }} title="Redeem in-store">
+        <div style={{ display: 'grid', gap: 10 }}>
+          <p style={{ color: '#374151' }}>
+            Go to <strong>{modalOffer?.merchants?.name ?? 'the store'}</strong>
+            {/* if you add merchants.address_text later, this will show it */}
+            {(modalOffer as any)?.merchants?.address_text ? (
+              <> at <strong>{(modalOffer as any).merchants.address_text}</strong></>
+            ) : null}
+            {' '}and ask a friendly staff member to scan your QR in the Today’s Stash merchant app.
+          </p>
+          <div style={{ display: 'grid', placeItems: 'center', padding: 12, border: '1px dashed #e5e7eb', borderRadius: 12 }}>
+            {token ? <QRCode value={token} size={200} /> : <div>Generating…</div>}
+          </div>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <div style={{ fontSize: 14, color: '#6b7280' }}>Expires in <strong>{Math.max(0, countdown)}</strong>s</div>
+            <button
+              onClick={() => { if (modalOffer) generateAndStartTimer(modalOffer); }}
+              style={{ marginLeft: 'auto', padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+            >
+              Refresh QR
+            </button>
+          </div>
+        </div>
+      </Modal>
     </main>
   );
 }

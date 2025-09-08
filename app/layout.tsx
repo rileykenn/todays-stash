@@ -1,6 +1,9 @@
 // app/layout.tsx
 'use client';
 
+const [hasMerchant, setHasMerchant] = useState<boolean>(false);
+const [isAdmin, setIsAdmin] = useState<boolean>(false);
+
 import './globals.css'; // ok if you don't have this; can be removed
 import { useEffect, useState } from 'react';
 import { usePathname } from 'next/navigation';
@@ -12,16 +15,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   const [email, setEmail] = useState<string | null>(null);
 
   useEffect(() => {
-    (async () => {
-      const { data: { session } } = await sb.auth.getSession();
-      setEmail(session?.user?.email ?? null);
-    })();
+  (async () => {
+    const { data: { session } } = await sb.auth.getSession();
+    setEmail(session?.user?.email ?? null);
 
-    const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
-      setEmail(session?.user?.email ?? null);
-    });
-    return () => sub.subscription.unsubscribe();
-  }, []);
+    const { data: mid } = await sb.rpc('get_my_merchant');
+    setHasMerchant(!!mid);
+
+    const { data: admin } = await sb.rpc('is_admin');
+    setIsAdmin(!!admin);
+  })();
+
+  const { data: sub } = sb.auth.onAuthStateChange((_e, session) => {
+    setEmail(session?.user?.email ?? null);
+    sb.rpc('get_my_merchant').then(({ data }) => setHasMerchant(!!data));
+    sb.rpc('is_admin').then(({ data }) => setIsAdmin(!!data));
+  });
+  return () => sub.subscription.unsubscribe();
+}, []);
+
 
   const linkStyle: React.CSSProperties = {
     padding: '8px 12px',
@@ -46,9 +58,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             </Link>
 
             <div style={{ display: 'flex', gap: 8 }}>
-              <Link href="/consumer" style={linkStyle}>Deals</Link>
-              <Link href="/merchant" style={linkStyle}>Merchant</Link>
-            </div>
+  <Link href="/consumer" style={linkStyle}>Deals</Link>
+  {hasMerchant && <Link href="/merchant" style={linkStyle}>Merchant</Link>}
+  {isAdmin && <Link href="/admin" style={{ ...linkStyle, background: '#111827', color: '#fff' }}>Admin Dashboard</Link>}
+</div>
+
 
             <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 8 }}>
               {email ? (
