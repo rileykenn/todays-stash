@@ -9,7 +9,7 @@ function MerchantApplyPage() {
   const [abn, setAbn] = useState('');
   const [phone, setPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState(''); // NEW
+  const [password, setPassword] = useState('');
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -20,7 +20,6 @@ function MerchantApplyPage() {
     setError(null);
     setSuccess(null);
 
-    // quick client-side password check (keeps the demo smooth)
     if (password.length < 6) {
       setError('Please enter a password with at least 6 characters.');
       return;
@@ -28,50 +27,47 @@ function MerchantApplyPage() {
 
     setLoading(true);
     try {
-      // ensure we have an authenticated user
-      let {
-        data: { session },
-      } = await sb.auth.getSession();
+      // 1) See if we already have a session
+      let { data: { session } } = await sb.auth.getSession();
+      let authedUserId = session?.user?.id ?? null;
 
-      if (!session) {
-        // Try to sign up first (with password)
+      // 2) If no session, try to sign up with password
+      if (!authedUserId) {
         const signUpRes = await sb.auth.signUp({
           email,
           password,
           options: {
             data: { full_name: fullName, role: 'merchant_applicant' },
-            emailRedirectTo: `${window.location.origin}/merchant`,
+            emailRedirectTo: `${window.location.origin}/merchant/thanks`,
           },
         });
 
         if (signUpRes.error) {
           // If the user already exists, try sign-in instead
-          if (
-            signUpRes.error.message?.toLowerCase().includes('already registered') ||
-            signUpRes.error.message?.toLowerCase().includes('user already exists')
-          ) {
+          const msg = signUpRes.error.message?.toLowerCase() || '';
+          if (msg.includes('already registered') || msg.includes('user already exists')) {
             const signInRes = await sb.auth.signInWithPassword({ email, password });
             if (signInRes.error) throw signInRes.error;
+            authedUserId = signInRes.data.user?.id ?? null;
           } else {
             throw signUpRes.error;
           }
+        } else {
+          // Supabase returns a user even if email confirmation is required (no session yet)
+          authedUserId = signUpRes.data.user?.id ?? null;
         }
 
-        // refresh session after sign-up/sign-in
-        const g = await sb.auth.getSession();
-        session = g.data.session;
+        // Refresh session if possible (if email confirmation is OFF, this will exist now)
+        if (!session) {
+          const refreshed = await sb.auth.getSession();
+          session = refreshed.data.session;
+        }
       }
 
-      const userId = session?.user?.id ?? null;
-      if (!userId) {
-        // If your project enforces email confirmation, you might not get a session yet.
-        // For the demo, fail loudly so it’s clear what to change in Supabase Auth settings.
-        throw new Error('Please verify your email, then try submitting again.');
-      }
-
-      // Insert application tied to this auth user
+      // 3) Insert the application now (works with or without active session)
+      //    We tie it to the known user_id if we have it; otherwise leave null.
       const ins = await sb.from('merchant_applications').insert({
-        user_id: userId,
+        user_id: authedUserId, // may be null if RLS allows anonymous inserts; if not, ensure RLS permits this
         contact_name: fullName,
         business_name: businessName,
         abn,
@@ -79,12 +75,18 @@ function MerchantApplyPage() {
         email,
         status: 'pending',
       });
-
       if (ins.error) throw ins.error;
 
-      setSuccess(
-        'Application submitted. We’ll review and enable your merchant dashboard.'
-      );
+      // 4) Messaging depending on confirmation state
+      if (!session) {
+        setSuccess(
+          'Check your email inbox to finalise your application. Click the link we sent to confirm your email.'
+        );
+      } else {
+        setSuccess(
+          'Application submitted. We’ll review and enable your merchant dashboard.'
+        );
+      }
     } catch (err: any) {
       setError(err?.message ?? 'Something went wrong');
     } finally {
@@ -168,7 +170,6 @@ function MerchantApplyPage() {
           />
         </label>
 
-        {/* NEW: password field */}
         <label style={{ display: 'grid', gap: 6 }}>
           <span style={{ fontWeight: 600 }}>Create a password</span>
           <input
