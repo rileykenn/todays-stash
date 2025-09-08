@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
-import { supabase } from '@/lib/supabaseClient';     // public/anon for offers
-import { sb } from '@/lib/supabaseBrowser';          // authed client for RPCs
+import { supabase } from '@/lib/supabaseClient';
+import { sb } from '@/lib/supabaseBrowser';
 import QRCode from 'react-qr-code';
 import Modal from '@/components/Modal';
 
@@ -15,14 +15,18 @@ type Offer = {
   per_day_cap: number | null;
   today_used: number | null;
   photo_url: string | null;
-  merchants?: { name: string; photo_url: string | null; address_text?: string | null } | null;
+  merchants?: {
+    name: string;
+    photo_url: string | null;
+    address_text?: string | null;
+  } | null;
 };
 
 const TTL_SECONDS = 90;
 
 export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
-  const [remaining, setRemaining] = useState<number | null>(null); // from server only
+  const [remaining, setRemaining] = useState<number | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalOffer, setModalOffer] = useState<Offer | null>(null);
   const [token, setToken] = useState<string | null>(null);
@@ -32,7 +36,7 @@ export default function ConsumerPage() {
   const tickRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
 
-  // ---- load active offers ----
+  // ---- Load offers ----
   async function loadOffers() {
     const { data, error } = await supabase
       .from('offers')
@@ -52,18 +56,22 @@ export default function ConsumerPage() {
         per_day_cap: r.per_day_cap ?? null,
         today_used: r.today_used ?? null,
         photo_url: r.photo_url ?? null,
-        merchants: Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : (r.merchants ?? null),
+        merchants: Array.isArray(r.merchants)
+          ? (r.merchants[0] ?? null)
+          : (r.merchants ?? null),
       })) as Offer[];
       setOffers(rows);
     }
   }
 
-  // ---- server freebies (authoritative) ----
+  // ---- Get freebies left (server only) ----
   async function fetchRemaining() {
     const { data, error } = await sb.rpc('get_free_remaining');
     if (!error && data) {
       const r = Number((data as any)?.remaining ?? 0);
       setRemaining(Number.isFinite(r) ? r : 0);
+      // sync with nav badge
+      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
     }
   }
 
@@ -71,17 +79,22 @@ export default function ConsumerPage() {
     loadOffers();
     fetchRemaining();
 
-    // stay in sync with the nav badge (it emits this after it refreshes from server)
     const onBadge = (e: any) => {
       const r = Number(e?.detail?.remaining);
       if (Number.isFinite(r)) setRemaining(r);
-      else fetchRemaining(); // fallback to server
     };
     window.addEventListener('ts:free-used-updated', onBadge);
-    return () => window.removeEventListener('ts:free-used-updated', onBadge);
+
+    const onFocus = () => fetchRemaining();
+    window.addEventListener('focus', onFocus);
+
+    return () => {
+      window.removeEventListener('ts:free-used-updated', onBadge);
+      window.removeEventListener('focus', onFocus);
+    };
   }, []);
 
-  // ---- timer helpers ----
+  // ---- Timer helpers ----
   function stopTimers() {
     if (tickRef.current) clearInterval(tickRef.current);
     if (pollRef.current) clearInterval(pollRef.current);
@@ -115,7 +128,10 @@ export default function ConsumerPage() {
 
     if (tickRef.current) clearInterval(tickRef.current);
     tickRef.current = window.setInterval(() => {
-      const secs = Math.max(0, Math.ceil(((expiresAt ?? exp) - Date.now()) / 1000));
+      const secs = Math.max(
+        0,
+        Math.ceil(((expiresAt ?? exp) - Date.now()) / 1000),
+      );
       setCountdown(secs);
       if (secs <= 0) {
         clearInterval(tickRef.current!);
@@ -125,16 +141,14 @@ export default function ConsumerPage() {
     }, 250);
   }
 
-  // ---- actions ----
+  // ---- Actions ----
   async function startSession(offer: Offer) {
-    // ensure logged in
     const { data: { session } } = await sb.auth.getSession();
     if (!session) {
       window.location.href = '/signup';
       return;
     }
 
-    // double-check with server right before action
     await fetchRemaining();
     if (remaining !== null && remaining <= 0) {
       window.location.href = '/upgrade';
@@ -143,15 +157,7 @@ export default function ConsumerPage() {
 
     setModalOffer(offer);
     setModalOpen(true);
-
     await generateAndStartTimer(offer);
-
-    // keep offers fresh + nav badge will also refresh itself and emit event
-    if (pollRef.current) clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(async () => {
-      await loadOffers();
-      await fetchRemaining();
-    }, 10_000);
   }
 
   function closeModal() {
@@ -168,25 +174,40 @@ export default function ConsumerPage() {
   // ---- UI ----
   return (
     <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Today’s Deals</h1>
+      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>
+        Today’s Deals
+      </h1>
 
-      {offers.length === 0 && <p style={{ color: '#6b7280' }}>No deals available right now.</p>}
+      {offers.length === 0 && (
+        <p style={{ color: '#6b7280' }}>No deals available right now.</p>
+      )}
 
       {offers.map((o) => {
         const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
-        const mustUpgrade = remaining !== null && remaining <= 0;
 
         return (
           <div
             key={o.id}
-            style={{ border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, marginBottom: 16, background: '#fff' }}
+            style={{
+              border: '1px solid #e5e7eb',
+              borderRadius: 12,
+              padding: 16,
+              marginBottom: 16,
+              background: '#fff',
+            }}
           >
             {(o.photo_url || o.merchants?.photo_url) && (
               // eslint-disable-next-line @next/next/no-img-element
               <img
                 src={o.photo_url || o.merchants?.photo_url || ''}
                 alt={o.merchants?.name ?? 'Deal photo'}
-                style={{ width: '100%', maxWidth: 320, borderRadius: 12, marginBottom: 12, objectFit: 'cover' }}
+                style={{
+                  width: '100%',
+                  maxWidth: 320,
+                  borderRadius: 12,
+                  marginBottom: 12,
+                  objectFit: 'cover',
+                }}
               />
             )}
 
@@ -195,7 +216,20 @@ export default function ConsumerPage() {
             {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
             <p style={{ marginTop: 8 }}>Left today: {leftToday}</p>
 
-            {mustUpgrade ? (
+            {remaining === null ? (
+              <button
+                disabled
+                style={{
+                  marginTop: 8,
+                  padding: '8px 12px',
+                  borderRadius: 8,
+                  border: '1px solid #e5e7eb',
+                  color: '#6b7280',
+                }}
+              >
+                Checking…
+              </button>
+            ) : remaining <= 0 ? (
               <Link
                 href="/upgrade"
                 style={{
@@ -229,14 +263,19 @@ export default function ConsumerPage() {
         );
       })}
 
-      <Modal open={modalOpen && !!token} onClose={closeModal} title="Redeem in-store">
+      <Modal
+        open={modalOpen && !!token}
+        onClose={closeModal}
+        title="Redeem in-store"
+      >
         <div style={{ display: 'grid', gap: 10 }}>
           <p style={{ color: '#374151' }}>
             Go to <strong>{modalOffer?.merchants?.name ?? 'the store'}</strong>
             {modalOffer?.merchants?.address_text ? (
               <> at <strong>{modalOffer.merchants.address_text}</strong></>
             ) : null}{' '}
-            and ask a friendly staff member to scan your QR in the Today’s Stash merchant app.
+            and ask a friendly staff member to scan your QR in the Today’s Stash
+            merchant app.
           </p>
 
           <div
@@ -248,7 +287,11 @@ export default function ConsumerPage() {
               borderRadius: 12,
             }}
           >
-            {token ? <QRCode value={token} size={200} /> : <div>Generating…</div>}
+            {token ? (
+              <QRCode value={token} size={200} />
+            ) : (
+              <div>Generating…</div>
+            )}
           </div>
 
           <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
@@ -259,7 +302,12 @@ export default function ConsumerPage() {
               onClick={() => {
                 if (modalOffer) generateAndStartTimer(modalOffer);
               }}
-              style={{ marginLeft: 'auto', padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+              style={{
+                marginLeft: 'auto',
+                padding: '8px 12px',
+                borderRadius: 10,
+                border: '1px solid #e5e7eb',
+              }}
             >
               Refresh QR
             </button>
