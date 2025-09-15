@@ -12,6 +12,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   const [freeLeft, setFreeLeft] = useState<number | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+  const [hasMerchant, setHasMerchant] = useState<boolean | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -20,7 +21,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       if (session) {
         try {
           const free = await sb.rpc('get_free_remaining');
-          if (typeof free.data === 'number') setFreeLeft(free.data);
+          // some deployments return a number, others an object; handle both
+          const val =
+            typeof free.data === 'number'
+              ? free.data
+              : (free.data as any)?.remaining;
+          if (typeof val === 'number') setFreeLeft(val);
         } catch {}
       }
 
@@ -28,10 +34,25 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         const admin = await sb.rpc('is_admin');
         setIsAdmin(!!admin.data);
       } catch {}
+
+      try {
+        const { data } = await sb.rpc('get_my_merchant');
+        setHasMerchant(!!data);
+      } catch {
+        setHasMerchant(false);
+      }
     })();
   }, []);
 
-  const Tab = ({ href, label, active }: { href: string; label: string; active: boolean }) => (
+  const Tab = ({
+    href,
+    label,
+    active,
+  }: {
+    href: string;
+    label: string;
+    active: boolean;
+  }) => (
     <Link
       href={href}
       className={`flex-1 text-center py-3 text-sm ${
@@ -80,9 +101,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
           <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
             <div className="flex items-center">
-              <Tab href="/consumer" label="Home" active={pathname?.startsWith('/consumer') ?? false} />
-              <Tab href="/merchant/scan" label="Scan" active={pathname === '/merchant/scan'} />
-              <Tab href="/merchant" label="Profile" active={pathname?.startsWith('/merchant') ?? false} />
+              <Tab
+                href="/consumer"
+                label="Home"
+                active={pathname?.startsWith('/consumer') ?? false}
+              />
+              {hasMerchant ? (
+                <Tab
+                  href="/merchant/scan"
+                  label="Scan"
+                  active={pathname === '/merchant/scan'}
+                />
+              ) : null}
+              <Tab
+                href="/merchant"
+                label="Profile"
+                active={pathname?.startsWith('/merchant') ?? false}
+              />
             </div>
           </div>
         </nav>
