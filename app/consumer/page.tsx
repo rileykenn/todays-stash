@@ -6,9 +6,9 @@ import { supabase } from '@/lib/supabaseClient';
 import { sb } from '@/lib/supabaseBrowser';
 import QRCode from 'react-qr-code';
 import Modal from '@/components/Modal';
-import { DealCard } from '@/components/DealCard';
 import { CountdownRing } from '@/components/CountdownRing';
 import DealSkeleton from '@/components/DealSkeleton';
+import WelcomeHeader from '@/components/WelcomeHeader';
 
 type Offer = {
   id: string;
@@ -25,7 +25,6 @@ type Offer = {
   } | null;
 };
 
-// shape we expect back from the supabase select
 type RawOffer = {
   id: string;
   merchant_id: string;
@@ -46,7 +45,9 @@ export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [remaining, setRemaining] = useState<number | null>(null);
-  const [showHint, setShowHint] = useState<boolean>(false);
+
+  const [displayName, setDisplayName] = useState<string | null>(null);
+  const [area, setArea] = useState<string>('Sussex Inlet');
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalOffer, setModalOffer] = useState<Offer | null>(null);
@@ -55,7 +56,7 @@ export default function ConsumerPage() {
 
   const tickRef = useRef<number | null>(null);
 
-  // ---- load active offers ----
+  // -------- data --------
   async function loadOffers() {
     setIsLoading(true);
 
@@ -90,14 +91,12 @@ export default function ConsumerPage() {
         };
         return mapped;
       });
-
       setOffers(rows);
     }
 
     setIsLoading(false);
   }
 
-  // ---- freebies from server ----
   async function fetchRemaining() {
     const { data, error } = await sb.rpc('get_free_remaining');
     if (!error && data != null) {
@@ -111,23 +110,26 @@ export default function ConsumerPage() {
     loadOffers();
     fetchRemaining();
 
-    // first-visit: gentle pull-to-refresh hint
-    const seen = localStorage.getItem('ts_pull_hint_seen');
-    if (!seen) {
-      setShowHint(true);
-      const t = window.setTimeout(() => {
-        setShowHint(false);
-        localStorage.setItem('ts_pull_hint_seen', '1');
-      }, 3200);
-      return () => clearTimeout(t);
-    }
+    (async () => {
+      const { data: { session } } = await sb.auth.getSession();
+      if (session) {
+        const metaName =
+          (session.user.user_metadata &&
+            (session.user.user_metadata.full_name || session.user.user_metadata.name)) ||
+          session.user.email ||
+          null;
+        setDisplayName(metaName);
+      } else {
+        setDisplayName(null);
+      }
+    })();
 
     const onFocus = () => fetchRemaining();
     window.addEventListener('focus', onFocus);
     return () => window.removeEventListener('focus', onFocus);
   }, []);
 
-  // ---- QR session ----
+  // -------- QR session --------
   async function generateAndStartTimer(offer: Offer) {
     const { data, error } = await sb.rpc('start_redeem_session', {
       p_offer: offer.id,
@@ -166,16 +168,13 @@ export default function ConsumerPage() {
     }, 250);
   }
 
-  // ---- actions ----
   async function startSession(offer: Offer) {
-    // must be signed in
     const { data: { session } } = await sb.auth.getSession();
     if (!session) {
       window.location.href = '/signup';
       return;
     }
 
-    // hard check server freebies right now
     const { data, error } = await sb.rpc('get_free_remaining');
     if (error || !data) {
       alert('Could not check your freebies. Try again.');
@@ -203,16 +202,17 @@ export default function ConsumerPage() {
     }
   }
 
-  // ---- UI ----
+  // -------- UI --------
   return (
     <div className="py-4">
-      <h1 className="text-xl font-semibold mb-2">Today’s Deals</h1>
-
-      {showHint && (
-        <div className="mb-3 rounded-full px-3 py-2 text-xs text-white/80 border border-white/10 bg-[color:rgb(26_35_48_/_0.75)] backdrop-blur w-max">
-          Pull down to find fresh deals ✨
-        </div>
-      )}
+      {/* Welcome / area header */}
+      <WelcomeHeader
+        name={displayName}
+        area={area}
+        onChangeArea={() => {
+          alert('Area selection coming soon. MVP focuses on Sussex Inlet.');
+        }}
+      />
 
       {/* Skeletons while loading */}
       {isLoading && (
@@ -223,12 +223,12 @@ export default function ConsumerPage() {
         </div>
       )}
 
-      {/* No deals (after load) */}
+      {/* No deals */}
       {!isLoading && offers.length === 0 && (
         <p className="text-white/60">No deals available right now.</p>
       )}
 
-      {/* Deals */}
+      {/* Deal list — soft green cards, dark text, 1:1 image on the left */}
       <div className="space-y-4">
         {offers.map((o) => {
           const leftToday =
@@ -237,29 +237,92 @@ export default function ConsumerPage() {
               : null;
 
           return (
-            <DealCard
+            <div
               key={o.id}
-              title={o.title}
-              terms={o.terms}
-              photo={o.photo_url ?? o.merchants?.photo_url ?? null}
-              merchantName={o.merchants?.name ?? null}
-              address={o.merchants?.address_text ?? null}
-              leftToday={leftToday}
-              cap={o.per_day_cap}
-              onGet={() => {
-                if (remaining === null) return; // still checking
-                if (remaining <= 0) {
-                  window.location.href = '/upgrade';
-                  return;
-                }
-                startSession(o);
-              }}
-            />
+              className="rounded-[18px] border border-white/10 bg-[var(--color-brand-50)] text-[var(--color-ink-900)]"
+            >
+              <div className="flex gap-3 p-3">
+                {/* 1:1 image left */}
+                <div className="w-24 h-24 rounded-xl overflow-hidden bg-white/40 shrink-0">
+                  {o.photo_url || o.merchants?.photo_url ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img
+                      src={o.photo_url || o.merchants?.photo_url || ''}
+                      alt={o.title}
+                      loading="lazy"
+                      className="w-full h-full object-cover"
+                    />
+                  ) : null}
+                </div>
+
+                {/* Text + actions */}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <h3 className="text-[15px] font-semibold tracking-wide uppercase">
+                        {o.title}
+                      </h3>
+                      <p className="text-xs opacity-70 truncate">
+                        {o.merchants?.name ?? ''}
+                      </p>
+                      {o.terms && (
+                        <p className="mt-1 text-[13px] opacity-80 line-clamp-2">{o.terms}</p>
+                      )}
+                    </div>
+
+                    <div className="shrink-0">
+                      {remaining === null ? (
+                        <button
+                          disabled
+                          className="rounded-full px-3 py-1.5 text-xs bg-white/60 text-[var(--color-ink-900)]"
+                        >
+                          Checking…
+                        </button>
+                      ) : remaining <= 0 ? (
+                        <Link
+                          href="/upgrade"
+                          className="rounded-full px-3 py-1.5 text-xs bg-white/80 text-[var(--color-ink-900)]"
+                        >
+                          Upgrade
+                        </Link>
+                      ) : (
+                        <button
+                          onClick={() => startSession(o)}
+                          className="rounded-full px-3 py-1.5 text-xs font-semibold bg-[var(--color-brand-600)] text-white hover:brightness-105 active:scale-95 transition"
+                        >
+                          Show QR
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Scarcity bar (subtle) */}
+                  {typeof leftToday === 'number' && typeof o.per_day_cap === 'number' && (
+                    <div className="mt-2">
+                      <div className="h-2 w-full rounded-full bg-[color:rgb(0_0_0_/_0.12)] overflow-hidden">
+                        <div
+                          className={`h-full ${leftToday <= 3 ? 'bg-[var(--color-accent-orange)]' : 'bg-[var(--color-brand-600)]'}`}
+                          style={{
+                            width: `${Math.round(((o.per_day_cap - leftToday) / o.per_day_cap) * 100)}%`,
+                          }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between mt-1 text-[11px] opacity-70">
+                        <span>Today</span>
+                        <span>
+                          {o.per_day_cap - leftToday}/{o.per_day_cap} used
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
           );
         })}
       </div>
 
-      {/* Upgrade helper */}
+      {/* Upgrade helper (if needed) */}
       {remaining !== null && remaining <= 0 && (
         <div className="mt-4">
           <Link
@@ -271,7 +334,7 @@ export default function ConsumerPage() {
         </div>
       )}
 
-      {/* Redeem modal */}
+      {/* Redeem modal with countdown ring */}
       <Modal open={modalOpen && !!token} onClose={closeModal} title="Redeem in-store">
         <div className="grid gap-3">
           <p className="text-sm text-white/70">
@@ -282,7 +345,6 @@ export default function ConsumerPage() {
             and ask a staff member to scan your QR in the Today’s Stash merchant app.
           </p>
 
-          {/* Ring + QR */}
           <div className="relative mx-auto my-2 grid place-items-center">
             <CountdownRing secondsLeft={countdown} total={TTL_SECONDS} />
             <div className="absolute bg-white p-2 rounded-md">
