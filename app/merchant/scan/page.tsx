@@ -14,14 +14,21 @@ export default function ScanPage() {
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
-  const handledRef = useRef<boolean>(false);
+  const stopRef = useRef<() => void>(() => {});
 
   const [scanning, setScanning] = useState<boolean>(false);
   const [result, setResult] = useState<ScanResult>(null);
   const [error, setError] = useState<string | null>(null);
   const [merchantId, setMerchantId] = useState<string | null>(null);
 
-  // Load session + merchant id
+  // ----- helpers -----
+  const stopCamera = () => {
+    try { (readerRef.current as any)?.reset?.(); } catch {}
+    const stream = videoRef.current?.srcObject as MediaStream | undefined;
+    stream?.getTracks()?.forEach((t) => t.stop());
+    if (videoRef.current) videoRef.current.srcObject = null;
+  };
+
   useEffect(() => {
     let mounted = true;
 
@@ -31,16 +38,13 @@ export default function ScanPage() {
         router.replace('/merchant/login');
         return;
       }
-
       const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
       if (mErr) {
         if (mounted) setError(mErr.message);
         return;
       }
       if (!mid) {
-        if (mounted) {
-          setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
-        }
+        if (mounted) setError('This account is not linked to a merchant.');
         return;
       }
       if (mounted) setMerchantId(mid as string);
@@ -54,74 +58,86 @@ export default function ScanPage() {
 
     return () => {
       sub.subscription.unsubscribe();
-
-      // ✅ use the ref here (no 'reader' in this scope)
-      try { (readerRef.current as any)?.reset?.(); } catch {}
-
-      const stream = videoRef.current?.srcObject as MediaStream | undefined;
-      stream?.getTracks()?.forEach((t) => t.stop());
+      stopCamera();
     };
   }, [router]);
 
-  // Start camera + scanner
+  // Start camera + reader with explicit getUserMedia (iOS-friendly)
   const startScan = async () => {
     if (!merchantId) {
       setError('Merchant not ready yet. Please wait a moment and try again.');
       return;
     }
-
     setError(null);
     setResult(null);
     setScanning(true);
-    handledRef.current = false;
 
     try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: 'environment' },
+        },
+        audio: false,
+      });
+      if (!videoRef.current) throw new Error('video missing');
+      videoRef.current.srcObject = stream;
+      await videoRef.current.play();
+
       const reader = new BrowserMultiFormatReader();
       readerRef.current = reader;
 
-      await reader.decodeFromConstraints(
-        { video: { facingMode: { ideal: 'environment' } } },
-        videoRef.current!,
+      // decode continuously until we handle one result
+      const controls = await reader.decodeFromVideoDevice(
+        undefined,
+        videoRef.current,
         async (res: Result | undefined) => {
-          if (!res || handledRef.current) return;
-          handledRef.current = true;
-
-          const tokenText = res.getText();
-
-          // Stop camera before hitting RPC
-          try { (reader as any).reset?.(); } catch {}
-          const stream = videoRef.current?.srcObject as MediaStream | undefined;
-          stream?.getTracks()?.forEach((t) => t.stop());
-          setScanning(false);
-
-          const { data, error: rpcErr } = await sb.rpc('validate_scan', {
-            p_token: tokenText,
-            p_merchant: merchantId,
-          });
-
-          if (rpcErr) {
-            console.error('validate_scan RPC error:', rpcErr);
-            setResult({ ok: false, reason: rpcErr.message || 'rpc_error' });
-            return;
-          }
-
-          if (!data) {
-            setResult({ ok: false, reason: 'no_data' });
-            return;
-          }
-
-          const { outcome, reason } = data as RpcValidateResult;
-          setResult({
-            ok: outcome === 'accepted',
-            reason: outcome === 'accepted' ? null : (reason ?? 'unknown'),
-          });
+          if (!res) return;
+          controls.stop(); // stop reading further
+          handleToken(res.getText());
         }
       );
-    } catch (e) {
+
+      stopRef.current = () => {
+        try { controls.stop(); } catch {}
+        stopCamera();
+        setScanning(false);
+      };
+    } catch (e: unknown) {
       console.error(e);
       setScanning(false);
-      setError('Camera error. Please check permissions and try again.');
+      const msg =
+        (e as Error)?.name === 'NotAllowedError'
+          ? 'Camera permission denied. Enable camera in Site Settings.'
+          : 'Camera error. Please check permissions and try again.';
+      setError(msg);
+      stopCamera();
     }
+  };
+
+  const handleToken = async (tokenText: string) => {
+    stopCamera();
+    setScanning(false);
+
+    const { data, error: rpcErr } = await sb.rpc('validate_scan', {
+      p_token: tokenText,
+      p_merchant: merchantId,
+    });
+
+    if (rpcErr) {
+      console.error('validate_scan RPC error:', rpcErr);
+      setResult({ ok: false, reason: rpcErr.message || 'rpc_error' });
+      return;
+    }
+    if (!data) {
+      setResult({ ok: false, reason: 'no_data' });
+      return;
+    }
+
+    const { outcome, reason } = data as RpcValidateResult;
+    setResult({
+      ok: outcome === 'accepted',
+      reason: outcome === 'accepted' ? null : (reason ?? 'unknown'),
+    });
   };
 
   const scanAgain = () => {
@@ -134,7 +150,7 @@ export default function ScanPage() {
       <h1 className="text-xl font-semibold mb-3">Merchant Scanner</h1>
 
       {error && (
-        <div className="mb-3 rounded-xl border border-white/10 bg-[color:rgb(254_243_199_/_0.14)] text-[color:rgb(252_211_77)] px-3 py-2 text-sm">
+        <div className="mb-3 rounded-xl border border-white/10 bg-[color:rgb(255_77_79_/_0.12)] text-[color:rgb(255_182_185)] px-3 py-2 text-sm">
           {error}
         </div>
       )}
@@ -143,24 +159,24 @@ export default function ScanPage() {
         <button
           onClick={startScan}
           disabled={!merchantId}
-          className="rounded-full bg-[var(--color-brand)] text-[var(--color-ink-900)] font-semibold px-4 py-2 disabled:opacity-50"
+          className="rounded-full bg-[var(--color-brand-600)] text-white font-semibold px-4 py-2 disabled:opacity-50 animate-[pulse-soft_1.8s_ease-in-out_infinite]"
         >
           {result ? 'Scan again' : 'Start scan'}
         </button>
       )}
 
       {/* Camera viewport with viewfinder */}
-      <div className="mt-4 rounded-2xl overflow-hidden bg-black border border-white/10">
+      <div className="mt-4 rounded-3xl overflow-hidden bg-black border border-white/10 shadow-lg">
         <div className="relative aspect-[3/4]">
           <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
 
           {/* Viewfinder overlay */}
           <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-            <div className="w-[72%] h-[48%] rounded-2xl border-2 border-white/60 relative">
-              <div className="absolute -left-1 -top-1 w-8 h-8 border-t-4 border-l-4 border-[var(--color-brand)] rounded-tl-xl" />
-              <div className="absolute -right-1 -top-1 w-8 h-8 border-t-4 border-r-4 border-[var(--color-brand)] rounded-tr-xl" />
-              <div className="absolute -left-1 -bottom-1 w-8 h-8 border-b-4 border-l-4 border-[var(--color-brand)] rounded-bl-xl" />
-              <div className="absolute -right-1 -bottom-1 w-8 h-8 border-b-4 border-r-4 border-[var(--color-brand)] rounded-br-xl" />
+            <div className="w-[72%] h-[48%] rounded-2xl border-2 border-white/50 relative">
+              <div className="absolute -left-1 -top-1 w-8 h-8 border-t-4 border-l-4 border-[var(--color-brand-600)] rounded-tl-xl" />
+              <div className="absolute -right-1 -top-1 w-8 h-8 border-t-4 border-r-4 border-[var(--color-brand-600)] rounded-tr-xl" />
+              <div className="absolute -left-1 -bottom-1 w-8 h-8 border-b-4 border-l-4 border-[var(--color-brand-600)] rounded-bl-xl" />
+              <div className="absolute -right-1 -bottom-1 w-8 h-8 border-b-4 border-r-4 border-[var(--color-brand-600)] rounded-br-xl" />
             </div>
           </div>
 
@@ -176,7 +192,7 @@ export default function ScanPage() {
         <div
           className={`mt-4 rounded-xl p-3 text-sm border ${
             result.ok
-              ? 'bg-[color:rgb(50_213_131_/_0.16)] border-[color:rgb(50_213_131_/_0.35)] text-[var(--color-brand-100)] confetti'
+              ? 'bg-[color:rgb(50_213_131_/_0.14)] border-[color:rgb(50_213_131_/_0.35)] text-[var(--color-brand-100)] confetti'
               : 'bg-[color:rgb(255_77_79_/_0.14)] border-[color:rgb(255_77_79_/_0.35)] text-[color:rgb(255_182_185)]'
           }`}
         >
@@ -185,8 +201,7 @@ export default function ScanPage() {
           </div>
           {!result.ok && result.reason && (
             <div className="mt-1 text-white/70">
-              Reason:{' '}
-              <span className="font-mono text-white/80">{result.reason}</span>
+              Reason: <span className="font-mono text-white/80">{result.reason}</span>
             </div>
           )}
           <button
