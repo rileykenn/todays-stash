@@ -6,6 +6,9 @@ import { supabase } from '@/lib/supabaseClient';
 import { sb } from '@/lib/supabaseBrowser';
 import QRCode from 'react-qr-code';
 import Modal from '@/components/Modal';
+import { DealCard } from '@/components/DealCard';
+import { CountdownRing } from '@/components/CountdownRing';
+import DealSkeleton from '@/components/DealSkeleton';
 
 type Offer = {
   id: string;
@@ -22,21 +25,40 @@ type Offer = {
   } | null;
 };
 
+// shape we expect back from the supabase select
+type RawOffer = {
+  id: string;
+  merchant_id: string;
+  title: string;
+  terms: string | null;
+  per_day_cap: number | null;
+  today_used: number | null;
+  photo_url: string | null;
+  merchants:
+    | { name: string; photo_url: string | null; address_text?: string | null }
+    | Array<{ name: string; photo_url: string | null; address_text?: string | null }>
+    | null;
+};
+
 const TTL_SECONDS = 90;
 
 export default function ConsumerPage() {
   const [offers, setOffers] = useState<Offer[]>([]);
-  const [remaining, setRemaining] = useState<number | null>(null); // server-only
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [remaining, setRemaining] = useState<number | null>(null);
+  const [showHint, setShowHint] = useState<boolean>(false);
+
   const [modalOpen, setModalOpen] = useState(false);
   const [modalOffer, setModalOffer] = useState<Offer | null>(null);
   const [token, setToken] = useState<string | null>(null);
-  const [expiresAt, setExpiresAt] = useState<number | null>(null);
   const [countdown, setCountdown] = useState(0);
 
   const tickRef = useRef<number | null>(null);
 
   // ---- load active offers ----
   async function loadOffers() {
+    setIsLoading(true);
+
     const { data, error } = await supabase
       .from('offers')
       .select(`
@@ -47,37 +69,58 @@ export default function ConsumerPage() {
       .order('id', { ascending: false });
 
     if (!error && data) {
-      const rows = (data || []).map((r: any) => ({
-        id: r.id,
-        merchant_id: r.merchant_id,
-        title: r.title,
-        terms: r.terms ?? null,
-        per_day_cap: r.per_day_cap ?? null,
-        today_used: r.today_used ?? null,
-        photo_url: r.photo_url ?? null,
-        merchants: Array.isArray(r.merchants)
-          ? (r.merchants[0] ?? null)
-          : (r.merchants ?? null),
-      })) as Offer[];
+      const rows = (data as unknown as RawOffer[]).map((r) => {
+        const merchant =
+          Array.isArray(r.merchants) ? (r.merchants[0] ?? null) : r.merchants;
+        const mapped: Offer = {
+          id: r.id,
+          merchant_id: r.merchant_id,
+          title: r.title,
+          terms: r.terms ?? null,
+          per_day_cap: r.per_day_cap ?? null,
+          today_used: r.today_used ?? null,
+          photo_url: r.photo_url ?? null,
+          merchants: merchant
+            ? {
+                name: merchant.name,
+                photo_url: merchant.photo_url,
+                address_text: merchant.address_text ?? null,
+              }
+            : null,
+        };
+        return mapped;
+      });
+
       setOffers(rows);
     }
+
+    setIsLoading(false);
   }
 
   // ---- freebies from server ----
   async function fetchRemaining() {
     const { data, error } = await sb.rpc('get_free_remaining');
-    if (!error && data) {
-      const r = Number((data as any)?.remaining ?? 0);
+    if (!error && data != null) {
+      const r = Number((data as unknown as { remaining?: number })?.remaining ?? 0);
       setRemaining(Number.isFinite(r) ? r : 0);
-      window.dispatchEvent(
-        new CustomEvent('ts:free-used-updated', { detail: data }),
-      );
+      window.dispatchEvent(new CustomEvent('ts:free-used-updated', { detail: data }));
     }
   }
 
   useEffect(() => {
     loadOffers();
     fetchRemaining();
+
+    // first-visit: gentle pull-to-refresh hint
+    const seen = localStorage.getItem('ts_pull_hint_seen');
+    if (!seen) {
+      setShowHint(true);
+      const t = window.setTimeout(() => {
+        setShowHint(false);
+        localStorage.setItem('ts_pull_hint_seen', '1');
+      }, 3200);
+      return () => clearTimeout(t);
+    }
 
     const onFocus = () => fetchRemaining();
     window.addEventListener('focus', onFocus);
@@ -105,21 +148,20 @@ export default function ConsumerPage() {
     const tok = String(data);
     setToken(tok);
 
-    const exp = Date.now() + TTL_SECONDS * 1000;
-    setExpiresAt(exp);
+    const localExp = Date.now() + TTL_SECONDS * 1000;
     setCountdown(TTL_SECONDS);
 
-    if (tickRef.current) clearInterval(tickRef.current);
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
+
     tickRef.current = window.setInterval(() => {
-      const secs = Math.max(
-        0,
-        Math.ceil(((expiresAt ?? exp) - Date.now()) / 1000),
-      );
+      const secs = Math.max(0, Math.ceil((localExp - Date.now()) / 1000));
       setCountdown(secs);
-      if (secs <= 0) {
-        clearInterval(tickRef.current!);
+      if (secs <= 0 && tickRef.current) {
+        clearInterval(tickRef.current);
         tickRef.current = null;
-        if (modalOffer) generateAndStartTimer(modalOffer);
       }
     }, 250);
   }
@@ -139,7 +181,7 @@ export default function ConsumerPage() {
       alert('Could not check your freebies. Try again.');
       return;
     }
-    const rem = Number((data as any)?.remaining ?? 0);
+    const rem = Number((data as unknown as { remaining?: number })?.remaining ?? 0);
     if (rem <= 0) {
       window.location.href = '/upgrade';
       return;
@@ -154,154 +196,113 @@ export default function ConsumerPage() {
     setModalOpen(false);
     setModalOffer(null);
     setToken(null);
-    setExpiresAt(null);
     setCountdown(0);
-    if (tickRef.current) clearInterval(tickRef.current);
+    if (tickRef.current) {
+      clearInterval(tickRef.current);
+      tickRef.current = null;
+    }
   }
 
   // ---- UI ----
   return (
-    <main style={{ maxWidth: 720, margin: '40px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>
-        Today’s Deals
-      </h1>
+    <div className="py-4">
+      <h1 className="text-xl font-semibold mb-2">Today’s Deals</h1>
 
-      {offers.length === 0 && (
-        <p style={{ color: '#6b7280' }}>No deals available right now.</p>
+      {showHint && (
+        <div className="mb-3 rounded-full px-3 py-2 text-xs text-white/80 border border-white/10 bg-[color:rgb(26_35_48_/_0.75)] backdrop-blur w-max">
+          Pull down to find fresh deals ✨
+        </div>
       )}
 
-      {offers.map((o) => {
-        const leftToday = (o.per_day_cap ?? 0) - (o.today_used ?? 0);
+      {/* Skeletons while loading */}
+      {isLoading && (
+        <div className="space-y-4">
+          <DealSkeleton />
+          <DealSkeleton />
+          <DealSkeleton />
+        </div>
+      )}
 
-        return (
-          <div
-            key={o.id}
-            style={{
-              border: '1px solid #e5e7eb',
-              borderRadius: 12,
-              padding: 16,
-              marginBottom: 16,
-              background: '#fff',
-            }}
+      {/* No deals (after load) */}
+      {!isLoading && offers.length === 0 && (
+        <p className="text-white/60">No deals available right now.</p>
+      )}
+
+      {/* Deals */}
+      <div className="space-y-4">
+        {offers.map((o) => {
+          const leftToday =
+            typeof o.per_day_cap === 'number' && typeof o.today_used === 'number'
+              ? Math.max(0, o.per_day_cap - o.today_used)
+              : null;
+
+          return (
+            <DealCard
+              key={o.id}
+              title={o.title}
+              terms={o.terms}
+              photo={o.photo_url ?? o.merchants?.photo_url ?? null}
+              merchantName={o.merchants?.name ?? null}
+              address={o.merchants?.address_text ?? null}
+              leftToday={leftToday}
+              cap={o.per_day_cap}
+              onGet={() => {
+                if (remaining === null) return; // still checking
+                if (remaining <= 0) {
+                  window.location.href = '/upgrade';
+                  return;
+                }
+                startSession(o);
+              }}
+            />
+          );
+        })}
+      </div>
+
+      {/* Upgrade helper */}
+      {remaining !== null && remaining <= 0 && (
+        <div className="mt-4">
+          <Link
+            href="/upgrade"
+            className="inline-flex rounded-full px-4 py-2 border border-white/10 text-white bg-[var(--color-ink-700)] hover:bg-[var(--color-ink-600)] transition"
           >
-            {(o.photo_url || o.merchants?.photo_url) && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={o.photo_url || o.merchants?.photo_url || ''}
-                alt={o.merchants?.name ?? 'Deal photo'}
-                style={{
-                  width: '100%',
-                  maxWidth: 320,
-                  borderRadius: 12,
-                  marginBottom: 12,
-                  objectFit: 'cover',
-                }}
-              />
-            )}
+            Upgrade for more deals
+          </Link>
+        </div>
+      )}
 
-            <h2 style={{ fontSize: 20, fontWeight: 600 }}>{o.title}</h2>
-            <p style={{ color: '#6b7280' }}>{o.merchants?.name ?? ''}</p>
-            {o.terms && <p style={{ color: '#9ca3af' }}>{o.terms}</p>}
-            <p style={{ marginTop: 8 }}>Left today: {leftToday}</p>
-
-            {remaining === null ? (
-              <button
-                disabled
-                style={{
-                  marginTop: 8,
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: '1px solid #e5e7eb',
-                  color: '#6b7280',
-                }}
-              >
-                Checking…
-              </button>
-            ) : remaining <= 0 ? (
-              <Link
-                href="/upgrade"
-                style={{
-                  display: 'inline-flex',
-                  marginTop: 8,
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  border: '1px solid #e5e7eb',
-                  color: '#111827',
-                  textDecoration: 'none',
-                }}
-              >
-                Upgrade for more deals
-              </Link>
-            ) : (
-              <button
-                onClick={() => startSession(o)}
-                style={{
-                  marginTop: 8,
-                  padding: '8px 12px',
-                  borderRadius: 8,
-                  background: '#10b981',
-                  color: 'white',
-                  fontWeight: 600,
-                }}
-              >
-                Show QR
-              </button>
-            )}
-          </div>
-        );
-      })}
-
-      <Modal
-        open={modalOpen && !!token}
-        onClose={closeModal}
-        title="Redeem in-store"
-      >
-        <div style={{ display: 'grid', gap: 10 }}>
-          <p style={{ color: '#374151' }}>
+      {/* Redeem modal */}
+      <Modal open={modalOpen && !!token} onClose={closeModal} title="Redeem in-store">
+        <div className="grid gap-3">
+          <p className="text-sm text-white/70">
             Go to <strong>{modalOffer?.merchants?.name ?? 'the store'}</strong>
             {modalOffer?.merchants?.address_text ? (
               <> at <strong>{modalOffer.merchants.address_text}</strong></>
             ) : null}{' '}
-            and ask a friendly staff member to scan your QR in the Today’s Stash
-            merchant app.
+            and ask a staff member to scan your QR in the Today’s Stash merchant app.
           </p>
 
-          <div
-            style={{
-              display: 'grid',
-              placeItems: 'center',
-              padding: 12,
-              border: '1px dashed #e5e7eb',
-              borderRadius: 12,
-            }}
-          >
-            {token ? (
-              <QRCode value={token} size={200} />
-            ) : (
-              <div>Generating…</div>
-            )}
+          {/* Ring + QR */}
+          <div className="relative mx-auto my-2 grid place-items-center">
+            <CountdownRing secondsLeft={countdown} total={TTL_SECONDS} />
+            <div className="absolute bg-white p-2 rounded-md">
+              {token ? <QRCode value={token} size={160} /> : <div className="text-sm">Generating…</div>}
+            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-            <div style={{ fontSize: 14, color: '#6b7280' }}>
+          <div className="flex items-center gap-2">
+            <div className={`text-sm ${countdown <= 10 ? 'text-[var(--color-accent-red)]' : 'text-white/60'}`}>
               Expires in <strong>{Math.max(0, countdown)}</strong>s
             </div>
             <button
-              onClick={() => {
-                if (modalOffer) generateAndStartTimer(modalOffer);
-              }}
-              style={{
-                marginLeft: 'auto',
-                padding: '8px 12px',
-                borderRadius: 10,
-                border: '1px solid #e5e7eb',
-              }}
+              onClick={() => modalOffer && generateAndStartTimer(modalOffer)}
+              className="ml-auto rounded-full px-3 py-2 text-sm border border-white/10 bg-[var(--color-ink-700)] hover:bg-[var(--color-ink-600)] transition"
             >
               Refresh QR
             </button>
           </div>
         </div>
       </Modal>
-    </main>
+    </div>
   );
 }

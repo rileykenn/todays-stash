@@ -1,23 +1,22 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 import { BrowserMultiFormatReader } from '@zxing/browser';
-import { Result } from '@zxing/library';
+import type { Result } from '@zxing/library';
 
-type RpcValidateResult = { outcome: 'accepted' | 'rejected'; reason?: string };
-type ScanResult = { ok: boolean; reason?: string } | null;
+type RpcValidateResult = { outcome: 'accepted' | 'rejected'; reason?: string | null };
+type ScanResult = { ok: boolean; reason?: string | null } | null;
 
 export default function ScanPage() {
   const router = useRouter();
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const readerRef = useRef<BrowserMultiFormatReader | null>(null);
-  const handledRef = useRef(false);
+  const handledRef = useRef<boolean>(false);
 
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState<boolean>(false);
   const [result, setResult] = useState<ScanResult>(null);
   const [error, setError] = useState<string | null>(null);
   const [merchantId, setMerchantId] = useState<string | null>(null);
@@ -39,7 +38,9 @@ export default function ScanPage() {
         return;
       }
       if (!mid) {
-        if (mounted) setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
+        if (mounted) {
+          setError('This account is not linked to a merchant. Ask an admin to add you to merchant_staff.');
+        }
         return;
       }
       if (mounted) setMerchantId(mid as string);
@@ -47,16 +48,18 @@ export default function ScanPage() {
 
     init();
 
-    // Keep session fresh / redirect if signed out
     const { data: sub } = sb.auth.onAuthStateChange((_e, s) => {
       if (!s) router.replace('/merchant/login');
     });
 
     return () => {
       sub.subscription.unsubscribe();
+
+      // ✅ use the ref here (no 'reader' in this scope)
       try { (readerRef.current as any)?.reset?.(); } catch {}
+
       const stream = videoRef.current?.srcObject as MediaStream | undefined;
-      stream?.getTracks()?.forEach(t => t.stop());
+      stream?.getTracks()?.forEach((t) => t.stop());
     };
   }, [router]);
 
@@ -88,7 +91,7 @@ export default function ScanPage() {
           // Stop camera before hitting RPC
           try { (reader as any).reset?.(); } catch {}
           const stream = videoRef.current?.srcObject as MediaStream | undefined;
-          stream?.getTracks()?.forEach(t => t.stop());
+          stream?.getTracks()?.forEach((t) => t.stop());
           setScanning(false);
 
           const { data, error: rpcErr } = await sb.rpc('validate_scan', {
@@ -110,11 +113,11 @@ export default function ScanPage() {
           const { outcome, reason } = data as RpcValidateResult;
           setResult({
             ok: outcome === 'accepted',
-            reason: outcome === 'accepted' ? undefined : (reason ?? 'unknown'),
+            reason: outcome === 'accepted' ? null : (reason ?? 'unknown'),
           });
         }
       );
-    } catch (e: unknown) {
+    } catch (e) {
       console.error(e);
       setScanning(false);
       setError('Camera error. Please check permissions and try again.');
@@ -127,11 +130,11 @@ export default function ScanPage() {
   };
 
   return (
-    <main style={{ maxWidth: 720, margin: '0 auto', padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 700, marginBottom: 12 }}>Merchant Scanner</h1>
+    <div className="py-4">
+      <h1 className="text-xl font-semibold mb-3">Merchant Scanner</h1>
 
       {error && (
-        <div style={{ padding: 12, borderRadius: 10, background: '#fef3c7', color: '#92400e', marginBottom: 12 }}>
+        <div className="mb-3 rounded-xl border border-white/10 bg-[color:rgb(254_243_199_/_0.14)] text-[color:rgb(252_211_77)] px-3 py-2 text-sm">
           {error}
         </div>
       )}
@@ -140,46 +143,64 @@ export default function ScanPage() {
         <button
           onClick={startScan}
           disabled={!merchantId}
-          style={{ padding: '10px 14px', borderRadius: 12, background: '#10b981', color: 'white', fontWeight: 600 }}
+          className="rounded-full bg-[var(--color-brand)] text-[var(--color-ink-900)] font-semibold px-4 py-2 disabled:opacity-50"
         >
           {result ? 'Scan again' : 'Start scan'}
         </button>
       )}
 
-      <div style={{ marginTop: 16 }}>
-        <video ref={videoRef} autoPlay muted playsInline style={{ width: '100%', borderRadius: 16 }} />
+      {/* Camera viewport with viewfinder */}
+      <div className="mt-4 rounded-2xl overflow-hidden bg-black border border-white/10">
+        <div className="relative aspect-[3/4]">
+          <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover" />
+
+          {/* Viewfinder overlay */}
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+            <div className="w-[72%] h-[48%] rounded-2xl border-2 border-white/60 relative">
+              <div className="absolute -left-1 -top-1 w-8 h-8 border-t-4 border-l-4 border-[var(--color-brand)] rounded-tl-xl" />
+              <div className="absolute -right-1 -top-1 w-8 h-8 border-t-4 border-r-4 border-[var(--color-brand)] rounded-tr-xl" />
+              <div className="absolute -left-1 -bottom-1 w-8 h-8 border-b-4 border-l-4 border-[var(--color-brand)] rounded-bl-xl" />
+              <div className="absolute -right-1 -bottom-1 w-8 h-8 border-b-4 border-r-4 border-[var(--color-brand)] rounded-br-xl" />
+            </div>
+          </div>
+
+          {/* Live status */}
+          <div className="absolute left-3 bottom-3 bg-[color:rgb(11_15_20_/_0.85)] backdrop-blur px-3 py-1.5 rounded-full text-xs border border-white/10">
+            {scanning ? <span className="text-[var(--color-brand-300)]">Scanning…</span> : <span className="text-white/70">Idle</span>}
+          </div>
+        </div>
       </div>
 
+      {/* Result toast */}
       {result && (
         <div
-          style={{
-            marginTop: 16,
-            padding: 16,
-            borderRadius: 16,
-            border: '1px solid #e5e7eb',
-            background: result.ok ? '#ecfdf5' : '#fef2f2',
-          }}
+          className={`mt-4 rounded-xl p-3 text-sm border ${
+            result.ok
+              ? 'bg-[color:rgb(50_213_131_/_0.16)] border-[color:rgb(50_213_131_/_0.35)] text-[var(--color-brand-100)] confetti'
+              : 'bg-[color:rgb(255_77_79_/_0.14)] border-[color:rgb(255_77_79_/_0.35)] text-[color:rgb(255_182_185)]'
+          }`}
         >
-          <div style={{ fontSize: 20, fontWeight: 700 }}>
-            {result.ok ? 'Accepted ✅' : 'Rejected ❌'}
+          <div className="text-base font-semibold">
+            {result.ok ? 'Accepted — enjoy!' : 'Rejected'}
           </div>
           {!result.ok && result.reason && (
-            <div style={{ marginTop: 6, color: '#6b7280' }}>
-              Reason: <span style={{ fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }}>{result.reason}</span>
+            <div className="mt-1 text-white/70">
+              Reason:{' '}
+              <span className="font-mono text-white/80">{result.reason}</span>
             </div>
           )}
           <button
             onClick={scanAgain}
-            style={{ marginTop: 12, padding: '8px 12px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+            className="mt-2 rounded-full px-3 py-1.5 text-sm border border-white/10 bg-[var(--color-ink-700)] hover:bg-[var(--color-ink-600)] transition"
           >
             Scan another
           </button>
         </div>
       )}
 
-      <p style={{ marginTop: 12, color: '#6b7280', fontSize: 12 }}>
-        Tip: If you keep seeing <code>expired</code>, bump the token TTL to 120s while testing.
+      <p className="mt-3 text-white/50 text-xs">
+        Tip: If you keep seeing <code className="font-mono">expired</code>, bump the token TTL to 120s while testing.
       </p>
-    </main>
+    </div>
   );
 }

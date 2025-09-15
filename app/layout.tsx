@@ -4,163 +4,88 @@
 import './globals.css';
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
-  const [email, setEmail] = useState<string | null>(null);
-  const [hasMerchant, setHasMerchant] = useState(false);
-  const [isAdmin, setIsAdmin] = useState(false);
+  const pathname = usePathname();
+
   const [freeLeft, setFreeLeft] = useState<number | null>(null);
-
-  async function refreshBadges() {
-    const { data: { session } } = await sb.auth.getSession();
-    const userEmail = session?.user?.email ?? null;
-    setEmail(userEmail);
-
-    // role flags
-    sb.rpc('get_my_merchant').then(({ data }) => setHasMerchant(!!data));
-    sb.rpc('is_admin').then(({ data }) => setIsAdmin(!!data));
-
-    // freebies: authoritative from server
-    if (session) {
-      const { data, error } = await sb.rpc('get_free_remaining');
-      if (!error && data) {
-        const r = Number((data as any)?.remaining ?? 0);
-        setFreeLeft(Number.isFinite(r) ? r : 0);
-      } else {
-        setFreeLeft(0);
-      }
-    } else {
-      setFreeLeft(null);
-    }
-  }
+  const [isAdmin, setIsAdmin] = useState(false);
 
   useEffect(() => {
-    let mounted = true;
-    refreshBadges();
+    (async () => {
+      const { data: { session } } = await sb.auth.getSession();
 
-    // react to auth changes
-    const { data: sub } = sb.auth.onAuthStateChange(() => {
-      if (mounted) refreshBadges();
-    });
+      if (session) {
+        try {
+          const free = await sb.rpc('get_free_remaining');
+          if (typeof free.data === 'number') setFreeLeft(free.data);
+        } catch {}
+      }
 
-    // react to explicit updates (from consumer page)
-    const onFreeUsed = () => refreshBadges();
-    window.addEventListener('ts:free-used-updated', onFreeUsed);
-
-    // refresh on tab focus
-    const onFocus = () => refreshBadges();
-    window.addEventListener('focus', onFocus);
-
-    return () => {
-      mounted = false;
-      sub.subscription.unsubscribe();
-      window.removeEventListener('ts:free-used-updated', onFreeUsed);
-      window.removeEventListener('focus', onFocus);
-    };
+      try {
+        const admin = await sb.rpc('is_admin');
+        setIsAdmin(!!admin.data);
+      } catch {}
+    })();
   }, []);
 
-  const linkStyle: React.CSSProperties = {
-    padding: '8px 12px',
-    borderRadius: 10,
-    border: '1px solid #e5e7eb',
-    textDecoration: 'none',
-  };
-
-  async function signOut() {
-    await sb.auth.signOut();
-    window.location.reload();
-  }
+  const Tab = ({ href, label, active }: { href: string; label: string; active: boolean }) => (
+    <Link
+      href={href}
+      className={`flex-1 text-center py-3 text-sm ${
+        active ? 'text-[var(--color-brand-600)] font-semibold' : 'text-white/70'
+      }`}
+    >
+      {label}
+    </Link>
+  );
 
   return (
     <html lang="en">
-      <body>
-        <header style={{ borderBottom: '1px solid #e5e7eb', background: '#fff' }}>
-          <nav
-            style={{
-              maxWidth: 980,
-              margin: '0 auto',
-              padding: '12px 16px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 12,
-            }}
-          >
-            <Link
-              href="/consumer"
-              style={{ fontWeight: 800, fontSize: 18, textDecoration: 'none', color: '#111827', marginRight: 8 }}
-            >
-              Today’s Stash
-            </Link>
+      <body className="bg-[var(--color-ink-900)] text-white antialiased">
+        {/* Top app bar (safe-area aware) */}
+        <div className="sticky top-0 z-40 backdrop-blur border-b border-white/10 bg-[color:rgb(18_24_33_/_0.8)]">
+          <div className="mx-auto max-w-screen-sm px-4 pt-[env(safe-area-inset-top)]">
+            <div className="h-14 flex items-center justify-between">
+              <Link href="/consumer" className="font-bold tracking-tight">
+                Today’s Stash
+              </Link>
 
-            <div style={{ display: 'flex', gap: 8 }}>
-              <Link href="/consumer" style={linkStyle}>Deals</Link>
-              {hasMerchant && <Link href="/merchant" style={linkStyle}>Merchant</Link>}
-              {isAdmin && (
-                <Link href="/admin" style={{ ...linkStyle, background: '#111827', color: '#fff' }}>
-                  Admin Dashboard
-                </Link>
-              )}
+              <div className="flex items-center gap-3">
+                {typeof freeLeft === 'number' && (
+                  <div className="text-xs bg-[color:rgb(34_197_94_/_0.18)] border border-[color:rgb(34_197_94_/_0.35)] text-[var(--color-brand-200)] rounded-full px-3 py-1">
+                    Free left: <span className="font-semibold">{freeLeft}</span>
+                  </div>
+                )}
+                {isAdmin && (
+                  <Link href="/admin" className="text-xs opacity-80 hover:opacity-100">
+                    Admin
+                  </Link>
+                )}
+              </div>
             </div>
+          </div>
+        </div>
 
-            <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-              {email && freeLeft !== null && (
-                <>
-                  <span
-                    style={{
-                      padding: '6px 10px',
-                      borderRadius: 999,
-                      background: '#eef2ff',
-                      color: '#3730a3',
-                      fontSize: 13,
-                      fontWeight: 600,
-                    }}
-                  >
-                    Free deals left: {Math.max(0, freeLeft)}
-                  </span>
+        {/* Page content */}
+        <main className="mx-auto max-w-screen-sm px-4">
+          {children}
+          {/* Spacer for bottom nav */}
+          <div className="h-20" />
+        </main>
 
-                  {freeLeft <= 0 && (
-                    <Link
-                      href="/upgrade"
-                      style={{
-                        padding: '6px 10px',
-                        borderRadius: 999,
-                        border: '1px solid #e5e7eb',
-                        background: '#fff',
-                        color: '#111827',
-                        fontSize: 13,
-                        fontWeight: 600,
-                        textDecoration: 'none',
-                      }}
-                    >
-                      Upgrade for unlimited deals
-                    </Link>
-                  )}
-                </>
-              )}
-
-              {email ? (
-                <>
-                  <span style={{ color: '#6b7280', fontSize: 14 }}>
-                    Signed in: <strong>{email}</strong>
-                  </span>
-                  <button
-                    onClick={signOut}
-                    style={{ padding: '8px 12px', borderRadius: 10, background: '#f3f4f6', border: '1px solid #e5e7eb' }}
-                  >
-                    Sign out
-                  </button>
-                </>
-              ) : (
-                <Link href="/signup" style={{ ...linkStyle, background: '#111827', color: '#fff' }}>
-                  Sign up
-                </Link>
-              )}
+        {/* Sticky bottom tab bar (safe-area aware) */}
+        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
+          <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
+            <div className="flex items-center">
+              <Tab href="/consumer" label="Home" active={pathname?.startsWith('/consumer') ?? false} />
+              <Tab href="/merchant/scan" label="Scan" active={pathname === '/merchant/scan'} />
+              <Tab href="/merchant" label="Profile" active={pathname?.startsWith('/merchant') ?? false} />
             </div>
-          </nav>
-        </header>
-
-        <main>{children}</main>
+          </div>
+        </nav>
       </body>
     </html>
   );

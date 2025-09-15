@@ -1,26 +1,62 @@
-@import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
+  /* keep these */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+
+  /* BRAND — money green */
+  --color-brand: #32D583;
+  --color-brand-50:  #F0FFF6;
+  --color-brand-100: #DCFCE7;
+  --color-brand-200: #BBF7D0;
+  --color-brand-300: #86EFAC;
+  --color-brand-400: #4ADE80;
+  --color-brand-500: #32D583;
+  --color-brand-600: #22C55E;
+  --color-brand-700: #16A34A;
+  --color-brand-800: #15803D;
+  --color-brand-900: #166534;
+
+  /* INK — dark UI surfaces */
+  --color-ink-900: #0B0F14;
+  --color-ink-800: #121821;
+  --color-ink-700: #1A2330;
+  --color-ink-600: #212C3B;
+  --color-ink-500: #314055;
+
+  /* ACCENTS — urgency / dopamine pops */
+  --color-accent-orange: #FF6B3D;
+  --color-accent-pink:   #FF4D8D;
+  --color-accent-yellow: #FFD166;
+  --color-accent-red:    #FF4D4F;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* lightweight success confetti (emoji) */
+.confetti { position: relative; overflow: hidden; }
+.confetti::after {
+  content: "🎉";
+  position: absolute; right: 8px; top: 8px;
+  animation: confetti-pop 800ms ease-out 1;
+  font-size: 22px;
+}
+@keyframes confetti-pop {
+  0% { transform: translateY(-10px) scale(0.7); opacity: 0; }
+  50% { transform: translateY(0) scale(1.1); opacity: 1; }
+  100% { transform: translateY(-6px) scale(1); opacity: 0; }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+/* micro-animations we’ll use via arbitrary utilities, e.g. animate-[glow_1.6s_ease-in-out_infinite] */
+@keyframes pulse-soft {
+  0%,100% { transform: scale(1); filter: brightness(1); }
+  50%     { transform: scale(1.02); filter: brightness(1.07); }
+}
+@keyframes glow {
+  0%   { box-shadow: 0 0 0 rgba(50,213,131,0); }
+  50%  { box-shadow: 0 0 24px rgba(50,213,131,0.6); }
+  100% { box-shadow: 0 0 0 rgba(50,213,131,0); }
+}
+@keyframes shimmer {
+  0%   { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
 }
