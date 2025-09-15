@@ -228,7 +228,7 @@ export default function ConsumerPage() {
         <p className="text-white/60">No deals available right now.</p>
       )}
 
-      {/* Deal list — soft green cards, dark text, 1:1 image on the left */}
+      {/* Deal list — DARK cards, readable light text, 1:1 image left */}
       <div className="space-y-4">
         {offers.map((o) => {
           const leftToday =
@@ -239,12 +239,12 @@ export default function ConsumerPage() {
           return (
             <div
               key={o.id}
-              className="rounded-[18px] border border-white/10 bg-[var(--color-brand-50)] text-[var(--color-ink-900)]"
+              className="rounded-[18px] border border-white/10 bg-[color:rgb(30_41_59)] text-white shadow-sm"
             >
               <div className="flex gap-3 p-3">
                 {/* 1:1 image left */}
-                <div className="w-24 h-24 rounded-xl overflow-hidden bg-white/40 shrink-0">
-                  {o.photo_url || o.merchants?.photo_url ? (
+                <div className="w-24 h-24 rounded-xl overflow-hidden bg-[color:rgb(15_23_42)] shrink-0">
+                  {(o.photo_url || o.merchants?.photo_url) && (
                     // eslint-disable-next-line @next/next/no-img-element
                     <img
                       src={o.photo_url || o.merchants?.photo_url || ''}
@@ -252,21 +252,21 @@ export default function ConsumerPage() {
                       loading="lazy"
                       className="w-full h-full object-cover"
                     />
-                  ) : null}
+                  )}
                 </div>
 
                 {/* Text + actions */}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
-                      <h3 className="text-[15px] font-semibold tracking-wide uppercase">
+                      <h3 className="text-[15px] font-semibold tracking-wide uppercase text-white">
                         {o.title}
                       </h3>
-                      <p className="text-xs opacity-70 truncate">
+                      <p className="text-xs text-white/70 truncate">
                         {o.merchants?.name ?? ''}
                       </p>
                       {o.terms && (
-                        <p className="mt-1 text-[13px] opacity-80 line-clamp-2">{o.terms}</p>
+                        <p className="mt-1 text-[13px] text-white/80 line-clamp-2">{o.terms}</p>
                       )}
                     </div>
 
@@ -274,21 +274,21 @@ export default function ConsumerPage() {
                       {remaining === null ? (
                         <button
                           disabled
-                          className="rounded-full px-3 py-1.5 text-xs bg-white/60 text-[var(--color-ink-900)]"
+                          className="rounded-full px-3 py-1.5 text-xs bg-white/20 text-white/70"
                         >
                           Checking…
                         </button>
                       ) : remaining <= 0 ? (
                         <Link
                           href="/upgrade"
-                          className="rounded-full px-3 py-1.5 text-xs bg-white/80 text-[var(--color-ink-900)]"
+                          className="rounded-full px-3 py-1.5 text-xs bg-[var(--color-brand-600)]/20 text-[var(--color-brand-200)]"
                         >
                           Upgrade
                         </Link>
                       ) : (
                         <button
                           onClick={() => startSession(o)}
-                          className="rounded-full px-3 py-1.5 text-xs font-semibold bg-[var(--color-brand-600)] text-white hover:brightness-105 active:scale-95 transition"
+                          className="rounded-full px-3 py-1.5 text-xs font-semibold bg-[var(--color-brand-600)] text-white hover:brightness-110 active:scale-95 transition"
                         >
                           Show QR
                         </button>
@@ -296,18 +296,18 @@ export default function ConsumerPage() {
                     </div>
                   </div>
 
-                  {/* Scarcity bar (subtle) */}
+                  {/* Scarcity bar */}
                   {typeof leftToday === 'number' && typeof o.per_day_cap === 'number' && (
                     <div className="mt-2">
-                      <div className="h-2 w-full rounded-full bg-[color:rgb(0_0_0_/_0.12)] overflow-hidden">
+                      <div className="h-2 w-full rounded-full bg-white/10 overflow-hidden">
                         <div
-                          className={`h-full ${leftToday <= 3 ? 'bg-[var(--color-accent-orange)]' : 'bg-[var(--color-brand-600)]'}`}
+                          className={`h-full ${leftToday <= 3 ? 'bg-orange-400' : 'bg-[var(--color-brand-600)]'}`}
                           style={{
                             width: `${Math.round(((o.per_day_cap - leftToday) / o.per_day_cap) * 100)}%`,
                           }}
                         />
                       </div>
-                      <div className="flex items-center justify-between mt-1 text-[11px] opacity-70">
+                      <div className="flex items-center justify-between mt-1 text-[11px] text-white/60">
                         <span>Today</span>
                         <span>
                           {o.per_day_cap - leftToday}/{o.per_day_cap} used
