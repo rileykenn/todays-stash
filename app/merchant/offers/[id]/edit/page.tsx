@@ -13,6 +13,7 @@ type Offer = {
   per_day_cap: number | null;
   active: boolean | null;
   photo_url: string | null;
+  savings_amount: number | null; // NEW
 };
 
 export default function EditOfferPage() {
@@ -36,6 +37,9 @@ export default function EditOfferPage() {
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(false);
   const [file, setFile] = useState<File | null>(null);
 
+  // NEW: Savings (AUD)
+  const [savingsAmount, setSavingsAmount] = useState<number>(0);
+
   useEffect(() => {
     let mounted = true;
     async function init() {
@@ -49,7 +53,7 @@ export default function EditOfferPage() {
 
       const [{ data: offer, error: e1 }, { data: merchant, error: e2 }] = await Promise.all([
         sb.from('offers')
-          .select('id,merchant_id,title,terms,per_day_cap,active,photo_url')
+          .select('id,merchant_id,title,terms,per_day_cap,active,photo_url,savings_amount') // include savings_amount
           .eq('id', id)
           .eq('merchant_id', merchant_id)
           .single(),
@@ -74,6 +78,7 @@ export default function EditOfferPage() {
         setActive(offer.active ?? true);
         setCurrentPhoto(offer.photo_url ?? null);
         setUseBizPhoto(!!mPhoto && offer.photo_url === mPhoto);
+        setSavingsAmount(typeof offer.savings_amount === 'number' ? offer.savings_amount : 0);
         setLoading(false);
       }
     }
@@ -88,6 +93,15 @@ export default function EditOfferPage() {
     return currentPhoto;
   }, [useBizPhoto, merchantPhoto, file, currentPhoto]);
 
+  // Parse “A$ 12.34” style inputs safely → number >= 0 with 2dp
+  function parseAud(input: string): number {
+    const cleaned = input.replace(/[^\d.]/g, '');
+    const parts = cleaned.split('.');
+    const normalized = parts.length > 1 ? `${parts[0]}.${parts[1].slice(0, 2)}` : parts[0];
+    const n = Number(normalized);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
   async function save() {
     if (!id || !merchantId) return;
     setSaving(true);
@@ -99,7 +113,6 @@ export default function EditOfferPage() {
       if (useBizPhoto) {
         photo_url = merchantPhoto ?? null;
       } else if (file) {
-        // store under merchant-media/<merchantId>/offers/<offerId>.jpg
         const path = `${merchantId}/offers/${id}.jpg`;
         const { error: upErr } = await sb
           .storage
@@ -116,6 +129,7 @@ export default function EditOfferPage() {
         per_day_cap: Number.isFinite(cap) ? cap : null,
         active,
         photo_url,
+        savings_amount: Math.round(parseAud(String(savingsAmount)) * 100) / 100, // 2dp
       };
 
       const { error: updErr } = await sb
@@ -240,6 +254,24 @@ export default function EditOfferPage() {
             </label>
           </div>
         </div>
+
+        {/* NEW: Savings (AUD) */}
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Savings (AUD)</label>
+          <div className="flex items-center gap-2">
+            <span className="px-3 py-2 rounded-xl bg-black/30 border border-white/10 text-sm">A$</span>
+            <input
+              inputMode="decimal"
+              value={savingsAmount.toFixed(2)}
+              onChange={(e) => setSavingsAmount(parseAud(e.target.value))}
+              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+              aria-label="Savings in Australian dollars"
+            />
+          </div>
+          <p className="mt-1 text-xs text-white/50">
+            How much a customer saves when redeeming this offer (AUD, two decimals).
+          </p>
+        </div>
       </section>
 
       {/* Actions */}
@@ -258,8 +290,7 @@ export default function EditOfferPage() {
           Cancel
         </Link>
       </div>
-      
-      {/* Spacer for bottom nav */}
+
       <div className="h-24" />
     </main>
   );

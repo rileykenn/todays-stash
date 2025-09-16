@@ -14,7 +14,7 @@ type Offer = {
   today_used: number | null;
   active: boolean | null;
   photo_url: string | null;
-  savings_amount: number | null;
+  savings_amount: number | null; // NEW
 };
 
 type Merchant = {
@@ -37,11 +37,12 @@ export default function NewOfferPage() {
   const [terms, setTerms] = useState('');
   const [cap, setCap] = useState<number>(10);
   const [active, setActive] = useState<boolean>(true);
-  const [savingsAmount, setSavingsAmount] = useState<number>(2.5);
+  const [savingsAmount, setSavingsAmount] = useState<number>(0); // AUD
 
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(true);
   const [file, setFile] = useState<File | null>(null);
 
+  // Preview image
   const previewUrl = useMemo(() => {
     if (!useBizPhoto && file) return URL.createObjectURL(file);
     return merchant?.photo_url ?? null;
@@ -77,6 +78,15 @@ export default function NewOfferPage() {
     return () => { mounted = false; };
   }, [router]);
 
+  // Parse “A$ 12.34” style inputs safely → number >= 0 with 2dp
+  function parseAud(input: string): number {
+    const cleaned = input.replace(/[^\d.]/g, '');
+    const parts = cleaned.split('.');
+    const normalized = parts.length > 1 ? `${parts[0]}.${parts[1].slice(0, 2)}` : parts[0];
+    const n = Number(normalized);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  }
+
   async function createOffer() {
     if (!merchant) return;
     setSaving(true);
@@ -91,7 +101,7 @@ export default function NewOfferPage() {
         per_day_cap: Number.isFinite(cap) ? cap : null,
         active,
         today_used: 0,
-        savings_amount: Number.isFinite(savingsAmount) ? savingsAmount : null,
+        savings_amount: Math.round(parseAud(String(savingsAmount)) * 100) / 100, // 2dp
         photo_url: useBizPhoto ? (merchant.photo_url ?? null) : null,
       };
 
@@ -212,15 +222,18 @@ export default function NewOfferPage() {
           </div>
 
           <div>
-            <label className="block text-xs text-white/60 mb-1">Savings amount ($)</label>
-            <input
-              type="number"
-              step="0.01"
-              min={0}
-              value={savingsAmount}
-              onChange={(e) => setSavingsAmount(parseFloat(e.target.value || '0'))}
-              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
-            />
+            <label className="block text-xs text-white/60 mb-1">Savings (AUD)</label>
+            <div className="flex items-center gap-2">
+              <span className="px-3 py-2 rounded-xl bg-black/30 border border-white/10 text-sm">A$</span>
+              <input
+                inputMode="decimal"
+                value={savingsAmount.toFixed(2)}
+                onChange={(e) => setSavingsAmount(parseAud(e.target.value))}
+                className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+                aria-label="Savings in Australian dollars"
+              />
+            </div>
+            <p className="mt-1 text-xs text-white/50">How much a customer saves when redeeming this offer (AUD, two decimals).</p>
           </div>
         </div>
 
@@ -276,7 +289,6 @@ export default function NewOfferPage() {
         </Link>
       </div>
 
-      {/* Spacer for bottom nav */}
       <div className="h-24" />
     </main>
   );
