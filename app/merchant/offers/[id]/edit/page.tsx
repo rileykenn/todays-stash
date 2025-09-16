@@ -13,7 +13,7 @@ type Offer = {
   per_day_cap: number | null;
   active: boolean | null;
   photo_url: string | null;
-  savings_amount: number | null; // NEW
+  savings_amount: number | null;
 };
 
 export default function EditOfferPage() {
@@ -28,17 +28,51 @@ export default function EditOfferPage() {
   const [merchantId, setMerchantId] = useState<string | null>(null);
   const [merchantPhoto, setMerchantPhoto] = useState<string | null>(null);
 
+  // form fields
   const [title, setTitle] = useState('');
-  const [terms, setTerms] = useState<string>('');
-  const [cap, setCap] = useState<number>(10);
+  const [terms, setTerms] = useState('');
+  const [capInput, setCapInput] = useState('');
+  const [savingsInput, setSavingsInput] = useState('');
   const [active, setActive] = useState<boolean>(true);
 
   const [currentPhoto, setCurrentPhoto] = useState<string | null>(null);
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(false);
   const [file, setFile] = useState<File | null>(null);
 
-  // NEW: Savings (AUD)
-  const [savingsAmount, setSavingsAmount] = useState<number>(0);
+  // validation
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  // preview image
+  const previewUrl = useMemo(() => {
+    if (useBizPhoto) return merchantPhoto;
+    if (file) return URL.createObjectURL(file);
+    return currentPhoto;
+  }, [useBizPhoto, merchantPhoto, file, currentPhoto]);
+
+  const moneyPattern = /^\d{0,7}(\.\d{0,2})?$/;
+  const intPattern = /^\d{0,6}$/;
+
+  function normalizeMoneyStr(s: string) {
+    if (!s) return '';
+    const n = Number(s);
+    if (!Number.isFinite(n)) return '';
+    return n.toFixed(2);
+  }
+
+  function validateAll() {
+    const errs: Record<string, string> = {};
+    if (!title.trim()) errs.title = 'Title is required.';
+    if (!terms.trim()) errs.terms = 'Terms are required.';
+    if (!capInput || !intPattern.test(capInput) || Number(capInput) <= 0) {
+      errs.cap = 'Enter a positive whole number.';
+    }
+    if (!savingsInput || !moneyPattern.test(savingsInput) || Number(savingsInput) <= 0) {
+      errs.savings = 'Enter a positive amount (max 2 decimals).';
+    }
+    setFieldErrors(errs);
+    return errs;
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -53,7 +87,7 @@ export default function EditOfferPage() {
 
       const [{ data: offer, error: e1 }, { data: merchant, error: e2 }] = await Promise.all([
         sb.from('offers')
-          .select('id,merchant_id,title,terms,per_day_cap,active,photo_url,savings_amount') // include savings_amount
+          .select('id,merchant_id,title,terms,per_day_cap,active,photo_url,savings_amount')
           .eq('id', id)
           .eq('merchant_id', merchant_id)
           .single(),
@@ -74,11 +108,13 @@ export default function EditOfferPage() {
 
         setTitle(offer.title || '');
         setTerms(offer.terms || '');
-        setCap(typeof offer.per_day_cap === 'number' ? offer.per_day_cap : 10);
+        setCapInput(offer.per_day_cap != null ? String(offer.per_day_cap) : '');
         setActive(offer.active ?? true);
         setCurrentPhoto(offer.photo_url ?? null);
         setUseBizPhoto(!!mPhoto && offer.photo_url === mPhoto);
-        setSavingsAmount(typeof offer.savings_amount === 'number' ? offer.savings_amount : 0);
+        setSavingsInput(
+          offer.savings_amount != null ? offer.savings_amount.toFixed(2) : ''
+        );
         setLoading(false);
       }
     }
@@ -87,22 +123,13 @@ export default function EditOfferPage() {
     return () => { mounted = false; };
   }, [id, router]);
 
-  const previewUrl = useMemo(() => {
-    if (useBizPhoto) return merchantPhoto;
-    if (file) return URL.createObjectURL(file);
-    return currentPhoto;
-  }, [useBizPhoto, merchantPhoto, file, currentPhoto]);
-
-  // Parse “A$ 12.34” style inputs safely → number >= 0 with 2dp
-  function parseAud(input: string): number {
-    const cleaned = input.replace(/[^\d.]/g, '');
-    const parts = cleaned.split('.');
-    const normalized = parts.length > 1 ? `${parts[0]}.${parts[1].slice(0, 2)}` : parts[0];
-    const n = Number(normalized);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
-  }
-
   async function save() {
+    const errs = validateAll();
+    if (Object.keys(errs).length > 0) {
+      setTouched({ title: true, terms: true, cap: true, savings: true });
+      return;
+    }
+
     if (!id || !merchantId) return;
     setSaving(true);
     setError(null);
@@ -125,11 +152,11 @@ export default function EditOfferPage() {
 
       const updates: Partial<Offer> = {
         title: title.trim(),
-        terms: terms.trim() || null,
-        per_day_cap: Number.isFinite(cap) ? cap : null,
+        terms: terms.trim(),
+        per_day_cap: Number(capInput),
         active,
         photo_url,
-        savings_amount: Math.round(parseAud(String(savingsAmount)) * 100) / 100, // 2dp
+        savings_amount: Math.round(Number(savingsInput) * 100) / 100,
       };
 
       const { error: updErr } = await sb
@@ -167,10 +194,101 @@ export default function EditOfferPage() {
         </div>
       )}
 
-      {/* Photo chooser */}
+      {/* Form */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5 space-y-4">
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Title</label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, title: true }))}
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.title && fieldErrors.title ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+          />
+          {touched.title && fieldErrors.title && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.title}</p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Terms</label>
+          <textarea
+            value={terms}
+            onChange={(e) => setTerms(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, terms: true }))}
+            rows={3}
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.terms && fieldErrors.terms ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+          />
+          {touched.terms && fieldErrors.terms && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.terms}</p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Per-day cap</label>
+            <input
+              inputMode="numeric"
+              pattern="\d*"
+              value={capInput}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '' || intPattern.test(v)) setCapInput(v);
+              }}
+              onBlur={() => {
+                setTouched((t) => ({ ...t, cap: true }));
+                if (capInput === '') return;
+                const n = Number(capInput);
+                setCapInput(Number.isFinite(n) ? String(Math.max(0, Math.trunc(n))) : '');
+              }}
+              className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm focus:outline-none
+                ${touched.cap && fieldErrors.cap ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+            />
+            {touched.cap && fieldErrors.cap && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.cap}</p>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Savings (AUD)</label>
+            <div className="flex items-center gap-2">
+              <span className="px-3 py-2 rounded-xl bg-black/30 border border-white/10 text-sm">A$</span>
+              <input
+                inputMode="decimal"
+                value={savingsInput}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '' || moneyPattern.test(v)) setSavingsInput(v);
+                }}
+                onBlur={() => {
+                  setTouched((t) => ({ ...t, savings: true }));
+                  setSavingsInput((s) => normalizeMoneyStr(s));
+                }}
+                className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm focus:outline-none
+                  ${touched.savings && fieldErrors.savings ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+              />
+            </div>
+            {touched.savings && fieldErrors.savings && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.savings}</p>
+            )}
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            className="accent-[var(--color-brand-600)]"
+            checked={active}
+            onChange={(e) => setActive(e.target.checked)}
+          />
+          <span className="text-sm">Active</span>
+        </div>
+      </section>
+
+      {/* Photo section */}
       <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5">
         <p className="text-sm font-semibold text-white/80 mb-3">Deal photo</p>
-
         <div className="flex items-center gap-4">
           <div className="w-24 h-24 rounded-xl overflow-hidden bg-black/20 border border-white/10 shrink-0">
             {previewUrl ? (
@@ -180,7 +298,6 @@ export default function EditOfferPage() {
               <div className="w-full h-full grid place-items-center text-white/40 text-xs">No photo</div>
             )}
           </div>
-
           <div className="flex-1 space-y-3">
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -191,7 +308,6 @@ export default function EditOfferPage() {
               />
               Use business profile photo
             </label>
-
             {!useBizPhoto && (
               <label className="inline-flex items-center gap-2 text-sm rounded-full px-3 py-2 bg-white/10 border border-white/10 hover:bg-white/15 cursor-pointer">
                 Upload image
@@ -207,74 +323,6 @@ export default function EditOfferPage() {
         </div>
       </section>
 
-      {/* Fields */}
-      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5 space-y-4">
-        <div>
-          <label className="block text-xs text-white/60 mb-1">Title</label>
-          <input
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            placeholder="e.g., 2-for-1 Coffee 3–5pm"
-            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
-          />
-        </div>
-
-        <div>
-          <label className="block text-xs text-white/60 mb-1">Terms</label>
-          <textarea
-            value={terms}
-            onChange={(e) => setTerms(e.target.value)}
-            placeholder="Weekdays only, dine-in, etc."
-            rows={3}
-            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
-          />
-        </div>
-
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs text-white/60 mb-1">Per-day cap</label>
-            <input
-              type="number"
-              min={0}
-              value={cap}
-              onChange={(e) => setCap(parseInt(e.target.value || '0', 10))}
-              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
-            />
-          </div>
-
-          <div className="flex items-end">
-            <label className="inline-flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                className="accent-[var(--color-brand-600)]"
-                checked={active}
-                onChange={(e) => setActive(e.target.checked)}
-              />
-              Active
-            </label>
-          </div>
-        </div>
-
-        {/* NEW: Savings (AUD) */}
-        <div>
-          <label className="block text-xs text-white/60 mb-1">Savings (AUD)</label>
-          <div className="flex items-center gap-2">
-            <span className="px-3 py-2 rounded-xl bg-black/30 border border-white/10 text-sm">A$</span>
-            <input
-              inputMode="decimal"
-              value={savingsAmount.toFixed(2)}
-              onChange={(e) => setSavingsAmount(parseAud(e.target.value))}
-              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
-              aria-label="Savings in Australian dollars"
-            />
-          </div>
-          <p className="mt-1 text-xs text-white/50">
-            How much a customer saves when redeeming this offer (AUD, two decimals).
-          </p>
-        </div>
-      </section>
-
-      {/* Actions */}
       <div className="flex gap-2">
         <button
           onClick={save}
