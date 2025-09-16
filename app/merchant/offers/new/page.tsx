@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 
@@ -10,121 +11,118 @@ type Offer = {
   title: string;
   terms: string | null;
   per_day_cap: number | null;
+  today_used: number | null;
   active: boolean | null;
+  photo_url: string | null;
+  savings_amount: number | null;
+};
+
+type Merchant = {
+  id: string;
+  name: string | null;
   photo_url: string | null;
 };
 
 export default function NewOfferPage() {
   const router = useRouter();
 
+  // merchant context
+  const [merchant, setMerchant] = useState<Merchant | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [merchantId, setMerchantId] = useState<string | null>(null);
-  const [merchantPhoto, setMerchantPhoto] = useState<string | null>(null);
-
+  // form state
   const [title, setTitle] = useState('');
-  const [terms, setTerms] = useState<string>('');
+  const [terms, setTerms] = useState('');
   const [cap, setCap] = useState<number>(10);
   const [active, setActive] = useState<boolean>(true);
+  const [savingsAmount, setSavingsAmount] = useState<number>(2.5);
 
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(true);
   const [file, setFile] = useState<File | null>(null);
+
   const previewUrl = useMemo(() => {
-    if (useBizPhoto) return merchantPhoto;
-    if (file) return URL.createObjectURL(file);
-    return null;
-  }, [useBizPhoto, merchantPhoto, file]);
+    if (!useBizPhoto && file) return URL.createObjectURL(file);
+    return merchant?.photo_url ?? null;
+  }, [useBizPhoto, file, merchant?.photo_url]);
 
   useEffect(() => {
     let mounted = true;
-
-    async function init() {
+    (async () => {
       const { data: { session } } = await sb.auth.getSession();
-      if (!session) {
-        router.replace('/merchant/login');
-        return;
+      if (!session) { router.replace('/merchant/login'); return; }
+
+      try {
+        const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
+        if (mErr) throw mErr;
+        if (!mid) { setError('This account is not linked to a merchant.'); return; }
+
+        const { data, error } = await sb
+          .from('merchants')
+          .select('id,name,photo_url')
+          .eq('id', mid as string)
+          .single();
+        if (error) throw error;
+
+        if (!mounted) return;
+        setMerchant(data as Merchant);
+      } catch (e: any) {
+        if (!mounted) return;
+        setError(e?.message ?? 'Failed to load merchant');
+      } finally {
+        if (mounted) setLoading(false);
       }
-
-      // get merchant for this user
-      const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
-      if (mErr) { setError(mErr.message); setLoading(false); return; }
-      if (!mid) { setError('No merchant linked to this account.'); setLoading(false); return; }
-      const merchant_id = mid as string;
-
-      // fetch merchant profile photo for convenience
-      const { data: merchant, error: e2 } = await sb
-        .from('merchants')
-        .select('photo_url')
-        .eq('id', merchant_id)
-        .single();
-      if (e2) { setError(e2.message); setLoading(false); return; }
-
-      if (!mounted) return;
-      setMerchantId(merchant_id);
-      setMerchantPhoto(merchant?.photo_url ?? null);
-      setLoading(false);
-    }
-
-    init();
+    })();
     return () => { mounted = false; };
   }, [router]);
 
   async function createOffer() {
-    if (!merchantId) return;
+    if (!merchant) return;
     setSaving(true);
     setError(null);
 
     try {
-      // 1) Insert the offer first (without photo) to get an id
+      // 1) create row first to get id
       const insertPayload: Partial<Offer> = {
-        merchant_id: merchantId,
+        merchant_id: merchant.id,
         title: title.trim(),
         terms: terms.trim() || null,
         per_day_cap: Number.isFinite(cap) ? cap : null,
         active,
-        photo_url: null, // set after upload if needed
+        today_used: 0,
+        savings_amount: Number.isFinite(savingsAmount) ? savingsAmount : null,
+        photo_url: useBizPhoto ? (merchant.photo_url ?? null) : null,
       };
 
-      const { data: inserted, error: insErr } = await sb
+      const { data: created, error: insErr } = await sb
         .from('offers')
         .insert(insertPayload)
         .select('id')
         .single();
       if (insErr) throw insErr;
 
-      const offerId = inserted?.id as string;
-      let photo_url: string | null = null;
+      const newId = (created as { id: string }).id;
 
-      // 2) Decide photo source
-      if (useBizPhoto) {
-        photo_url = merchantPhoto ?? null;
-      } else if (file) {
-        const path = `${merchantId}/offers/${offerId}.jpg`;
-        const { error: upErr } = await sb
-          .storage
+      // 2) if uploading a custom photo, upload and patch the row
+      if (!useBizPhoto && file) {
+        const path = `${merchant.id}/offers/${newId}.jpg`;
+        const { error: upErr } = await sb.storage
           .from('merchant-media')
           .upload(path, file, { upsert: true, contentType: file.type || 'image/jpeg' });
         if (upErr) throw upErr;
-        const { data: pub } = sb.storage.from('merchant-media').getPublicUrl(path);
-        photo_url = pub.publicUrl;
-      }
 
-      // 3) If we have a photo_url, update the offer
-      if (photo_url) {
+        const { data: pub } = sb.storage.from('merchant-media').getPublicUrl(path);
         const { error: updErr } = await sb
           .from('offers')
-          .update({ photo_url })
-          .eq('id', offerId)
-          .eq('merchant_id', merchantId);
+          .update({ photo_url: pub.publicUrl })
+          .eq('id', newId);
         if (updErr) throw updErr;
       }
 
       router.replace('/merchant/offers');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setError(msg);
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to create offer');
     } finally {
       setSaving(false);
     }
@@ -132,100 +130,154 @@ export default function NewOfferPage() {
 
   if (loading) {
     return (
-      <main style={{ maxWidth: 720, margin: '32px auto', padding: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Create Deal</h1>
-        <div>Loading…</div>
+      <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+        <h1 className="text-xl font-bold mb-4">New Deal</h1>
+        <div className="h-24 rounded-2xl bg-white/10 animate-pulse" />
       </main>
     );
   }
 
   return (
-    <main style={{ maxWidth: 720, margin: '32px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Create Deal</h1>
+    <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+      <h1 className="text-2xl font-bold mb-4">New Deal</h1>
 
       {error && (
-        <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{error}</div>
+        <div className="mb-4 rounded-2xl p-4 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)]">
+          {error}
+        </div>
       )}
 
-      <div style={{ display: 'grid', gap: 12 }}>
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Title</span>
+      {/* Live preview card */}
+      <section className="mb-5">
+        <p className="text-sm font-semibold text-white/70 mb-2">Preview</p>
+        <div className="bg-[rgb(24_32_45)] rounded-2xl p-3 border border-white/10">
+          <div className="flex gap-3">
+            <div className="w-20 h-20 rounded-xl overflow-hidden bg-black/20 shrink-0">
+              {previewUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
+              ) : (
+                <div className="w-full h-full grid place-items-center text-white/40 text-xs">No photo</div>
+              )}
+            </div>
+
+            <div className="flex-1">
+              <h3 className="text-base font-semibold leading-tight">
+                {title || 'Your deal title'}
+              </h3>
+              <p className="text-xs text-white/60 mt-0.5">{merchant?.name || 'Your business'}</p>
+              {terms && <p className="text-xs text-white/60 mt-1">{terms}</p>}
+              <div className="mt-3 text-xs text-white/60 flex items-center justify-between">
+                <span>Cap: {Number.isFinite(cap) ? cap : '—'}</span>
+                <span>Used today: 0</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Form */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5 space-y-4">
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Title</label>
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
             placeholder="e.g., 2-for-1 Coffee 3–5pm"
-            style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
           />
-        </label>
+        </div>
 
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Terms</span>
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Terms</label>
           <textarea
             value={terms}
             onChange={(e) => setTerms(e.target.value)}
             placeholder="Weekdays only, dine-in, etc."
             rows={3}
-            style={{ padding: 10, borderRadius: 10, border: '1px solid #e5e7eb' }}
+            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
           />
-        </label>
+        </div>
 
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Per-day cap</span>
-          <input
-            type="number"
-            min={0}
-            value={cap}
-            onChange={(e) => setCap(parseInt(e.target.value || '0', 10))}
-            style={{ width: 160, padding: '8px 10px', borderRadius: 10, border: '1px solid #e5e7eb' }}
-          />
-        </label>
-
-        <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
-          <span>Active</span>
-        </label>
-
-        <div style={{ height: 1, background: '#e5e7eb', margin: '8px 0' }} />
-
-        <div style={{ display: 'grid', gap: 8 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Per-day cap</label>
             <input
-              id="useBiz"
+              type="number"
+              min={0}
+              value={cap}
+              onChange={(e) => setCap(parseInt(e.target.value || '0', 10))}
+              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
+            />
+          </div>
+
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Savings amount ($)</label>
+            <input
+              type="number"
+              step="0.01"
+              min={0}
+              value={savingsAmount}
+              onChange={(e) => setSavingsAmount(parseFloat(e.target.value || '0'))}
+              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
               type="checkbox"
+              className="accent-[var(--color-brand-600)]"
+              checked={active}
+              onChange={(e) => setActive(e.target.checked)}
+            />
+            Active
+          </label>
+
+          <label className="inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="accent-[var(--color-brand-600)]"
               checked={useBizPhoto}
               onChange={(e) => setUseBizPhoto(e.target.checked)}
             />
-            <label htmlFor="useBiz">Use business profile photo</label>
-          </div>
-
-          {!useBizPhoto && (
-            <label style={{ display: 'grid', gap: 6 }}>
-              <span style={{ fontWeight: 600 }}>Upload deal photo</span>
-              <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-            </label>
-          )}
-
-          <div style={{ width: 160, height: 160, borderRadius: 12, overflow: 'hidden', background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            {previewUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={previewUrl} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-            ) : (
-              <span style={{ fontSize: 12, color: '#9ca3af' }}>No photo</span>
-            )}
-          </div>
+            Use business photo
+          </label>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-          <button
-            onClick={createOffer}
-            disabled={saving}
-            style={{ padding: '10px 14px', borderRadius: 10, background: '#10b981', color: 'white', fontWeight: 600 }}
-          >
-            {saving ? 'Creating…' : 'Create Deal'}
-          </button>
-          <a href="/merchant/offers" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid #e5e7eb' }}>Cancel</a>
-        </div>
+        {!useBizPhoto && (
+          <label className="inline-flex items-center gap-2 text-sm rounded-full px-3 py-2 bg-white/10 border border-white/10 hover:bg-white/15 cursor-pointer w-fit">
+            Upload custom image
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+          </label>
+        )}
+      </section>
+
+      {/* Actions */}
+      <div className="flex gap-2">
+        <button
+          onClick={createOffer}
+          disabled={saving}
+          className="flex-1 rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
+        >
+          {saving ? 'Creating…' : 'Create Deal'}
+        </button>
+        <Link
+          href="/merchant/offers"
+          className="flex-1 text-center rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15"
+        >
+          Cancel
+        </Link>
       </div>
+
+      {/* Spacer for bottom nav */}
+      <div className="h-24" />
     </main>
   );
 }

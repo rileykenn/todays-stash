@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { sb } from '@/lib/supabaseBrowser';
 
 type Offer = {
@@ -38,25 +39,19 @@ export default function EditOfferPage() {
   useEffect(() => {
     let mounted = true;
     async function init() {
-      // must be signed in to edit
       const { data: { session } } = await sb.auth.getSession();
-      if (!session) {
-        router.replace('/merchant/login');
-        return;
-      }
+      if (!session) { router.replace('/merchant/login'); return; }
 
-      // which merchant is this user tied to?
       const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
       if (mErr) { setError(mErr.message); setLoading(false); return; }
       if (!mid) { setError('No merchant linked to this account.'); setLoading(false); return; }
-
       const merchant_id = mid as string;
 
       const [{ data: offer, error: e1 }, { data: merchant, error: e2 }] = await Promise.all([
         sb.from('offers')
           .select('id,merchant_id,title,terms,per_day_cap,active,photo_url')
           .eq('id', id)
-          .eq('merchant_id', merchant_id) // ensure offer belongs to THIS merchant
+          .eq('merchant_id', merchant_id)
           .single(),
         sb.from('merchants')
           .select('photo_url')
@@ -127,7 +122,7 @@ export default function EditOfferPage() {
         .from('offers')
         .update(updates)
         .eq('id', id)
-        .eq('merchant_id', merchantId); // double guard
+        .eq('merchant_id', merchantId);
       if (updErr) throw updErr;
 
       router.replace('/merchant/offers');
@@ -139,98 +134,133 @@ export default function EditOfferPage() {
     }
   }
 
+  if (loading) {
+    return (
+      <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+        <h1 className="text-xl font-bold mb-4">Edit Deal</h1>
+        <div className="h-24 rounded-2xl bg-white/10 animate-pulse" />
+      </main>
+    );
+  }
+
   return (
-    <main style={{ maxWidth: 720, margin: '32px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Edit Deal</h1>
+    <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+      <h1 className="text-2xl font-bold mb-4">Edit Deal</h1>
 
-      {loading ? (
-        <div>Loading…</div>
-      ) : (
-        <div style={{ display: 'grid', gap: 12 }}>
-          {error && (
-            <div style={{ padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{error}</div>
-          )}
+      {error && (
+        <div className="mb-4 rounded-2xl p-4 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)]">
+          {error}
+        </div>
+      )}
 
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 600 }}>Title</span>
-            <input
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g., 2-for-1 Coffee 3–5pm"
-              style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #e5e7eb' }}
-            />
-          </label>
+      {/* Photo chooser */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5">
+        <p className="text-sm font-semibold text-white/80 mb-3">Deal photo</p>
 
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 600 }}>Terms</span>
-            <textarea
-              value={terms}
-              onChange={(e) => setTerms(e.target.value)}
-              placeholder="Weekdays only, dine-in, etc."
-              rows={3}
-              style={{ padding: 10, borderRadius: 10, border: '1px solid #e5e7eb' }}
-            />
-          </label>
+        <div className="flex items-center gap-4">
+          <div className="w-24 h-24 rounded-xl overflow-hidden bg-black/20 border border-white/10 shrink-0">
+            {previewUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={previewUrl} alt="Preview" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full grid place-items-center text-white/40 text-xs">No photo</div>
+            )}
+          </div>
 
-          <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontWeight: 600 }}>Per-day cap</span>
+          <div className="flex-1 space-y-3">
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="accent-[var(--color-brand-600)]"
+                checked={useBizPhoto}
+                onChange={(e) => setUseBizPhoto(e.target.checked)}
+              />
+              Use business profile photo
+            </label>
+
+            {!useBizPhoto && (
+              <label className="inline-flex items-center gap-2 text-sm rounded-full px-3 py-2 bg-white/10 border border-white/10 hover:bg-white/15 cursor-pointer">
+                Upload image
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => setFile(e.target.files?.[0] || null)}
+                />
+              </label>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* Fields */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5 space-y-4">
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Title</label>
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="e.g., 2-for-1 Coffee 3–5pm"
+            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+          />
+        </div>
+
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Terms</label>
+          <textarea
+            value={terms}
+            onChange={(e) => setTerms(e.target.value)}
+            placeholder="Weekdays only, dine-in, etc."
+            rows={3}
+            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Per-day cap</label>
             <input
               type="number"
               min={0}
               value={cap}
               onChange={(e) => setCap(parseInt(e.target.value || '0', 10))}
-              style={{ width: 160, padding: '8px 10px', borderRadius: 10, border: '1px solid #e5e7eb' }}
+              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
             />
-          </label>
-
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <input type="checkbox" checked={active} onChange={(e) => setActive(e.target.checked)} />
-            <span>Active</span>
-          </label>
-
-          <div style={{ height: 1, background: '#e5e7eb', margin: '8px 0' }} />
-
-          <div style={{ display: 'grid', gap: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <input
-                id="useBiz"
-                type="checkbox"
-                checked={useBizPhoto}
-                onChange={(e) => setUseBizPhoto(e.target.checked)}
-              />
-              <label htmlFor="useBiz">Use business profile photo</label>
-            </div>
-
-            {!useBizPhoto && (
-              <label style={{ display: 'grid', gap: 6 }}>
-                <span style={{ fontWeight: 600 }}>Upload deal photo</span>
-                <input type="file" accept="image/*"
-                  onChange={(e) => setFile(e.target.files?.[0] || null)} />
-              </label>
-            )}
-
-            <div style={{ width: 160, height: 160, borderRadius: 12, overflow: 'hidden', background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              {previewUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img src={previewUrl} alt="Preview" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-              ) : (
-                <span style={{ fontSize: 12, color: '#9ca3af' }}>No photo</span>
-              )}
-            </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-            <button
-              onClick={save}
-              disabled={saving}
-              style={{ padding: '10px 14px', borderRadius: 10, background: '#10b981', color: 'white', fontWeight: 600 }}
-            >
-              {saving ? 'Saving…' : 'Save Changes'}
-            </button>
-            <a href="/merchant/offers" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid #e5e7eb' }}>Cancel</a>
+          <div className="flex items-end">
+            <label className="inline-flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                className="accent-[var(--color-brand-600)]"
+                checked={active}
+                onChange={(e) => setActive(e.target.checked)}
+              />
+              Active
+            </label>
           </div>
         </div>
-      )}
+      </section>
+
+      {/* Actions */}
+      <div className="flex gap-2">
+        <button
+          onClick={save}
+          disabled={saving}
+          className="flex-1 rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
+        >
+          {saving ? 'Saving…' : 'Save Changes'}
+        </button>
+        <Link
+          href="/merchant/offers"
+          className="flex-1 text-center rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15"
+        >
+          Cancel
+        </Link>
+      </div>
+      
+      {/* Spacer for bottom nav */}
+      <div className="h-24" />
     </main>
   );
 }
