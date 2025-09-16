@@ -7,27 +7,24 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 import { ensureProfile } from '@/lib/ensureProfile';
-
-// Optional: only import if the file exists.
-// If you haven't added the file yet, comment the next line out.
 import ReferralBanner from '@/components/ReferralBanner';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [freeLeft, setFreeLeft] = useState<number | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [hasMerchant, setHasMerchant] = useState<boolean | null>(null);
-  const [showBanner, setShowBanner] = useState(true); // if banner throws, we hide it so layout keeps rendering
+  const [hasMerchant, setHasMerchant] = useState<boolean>(false);
+  const [showBanner, setShowBanner] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
         const { data: { session } } = await sb.auth.getSession();
 
-        // Ensure a profiles row exists
+        // Ensure profile exists
         await ensureProfile();
 
-        // Capture ?ref=CODE exactly once
+        // One-time ?ref=CODE capture
         if (typeof window !== 'undefined') {
           const url = new URL(window.location.href);
           const code = url.searchParams.get('ref');
@@ -36,7 +33,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             try {
               await sb.rpc('apply_referral_code', { p_code: code });
             } catch {
-              // swallow for MVP
+              // ignore for MVP
             } finally {
               localStorage.setItem('tsappliedref', '1');
               url.searchParams.delete('ref');
@@ -49,36 +46,35 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         if (session) {
           try {
             const free = await sb.rpc('get_free_remaining');
-            const val =
-              typeof free.data === 'number' ? free.data : (free.data as any)?.remaining;
+            const val = typeof free.data === 'number'
+              ? free.data
+              : (free.data as any)?.remaining;
             if (typeof val === 'number') setFreeLeft(val);
           } catch {}
-        }
 
-        try {
-          const admin = await sb.rpc('is_admin');
-          setIsAdmin(!!admin.data);
-        } catch {}
+          try {
+            const admin = await sb.rpc('is_admin');
+            setIsAdmin(!!admin.data);
+          } catch {}
 
-        try {
-          const { data } = await sb.rpc('get_my_merchant');
-          setHasMerchant(!!data);
-        } catch {
-          setHasMerchant(false);
+          try {
+            const { data } = await sb.rpc('get_my_merchant');
+            setHasMerchant(!!data);
+          } catch {
+            setHasMerchant(false);
+          }
         }
       } catch {
-        // If anything unexpected happens, still render layout
+        // still render layout
       }
     })();
   }, []);
 
-  // safe wrapper for banner so it can’t crash the layout
   const BannerSlot = () => {
     if (!showBanner) return null;
     try {
       return (
         <div className="mx-auto max-w-screen-sm px-4 mt-2">
-          {/* Comment out the next line if you haven’t added the component yet */}
           <ReferralBanner />
         </div>
       );
@@ -139,7 +135,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
-        {/* Rewards banner (guarded) */}
+        {/* Rewards banner */}
         <BannerSlot />
 
         {/* Page content */}
@@ -152,9 +148,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
           <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
             <div className="flex items-center">
-              <Tab href="/consumer" label="Home" active={pathname?.startsWith('/consumer') ?? false} />
-              {hasMerchant ? <Tab href="/merchant/scan" label="Scan" active={pathname === '/merchant/scan'} /> : null}
-              <Tab href="/merchant" label="Profile" active={pathname?.startsWith('/merchant') ?? false} />
+              <Tab
+                href="/consumer"
+                label="Home"
+                active={pathname?.startsWith('/consumer') ?? false}
+              />
+              {hasMerchant && (
+                <Tab
+                  href="/merchant/scan"
+                  label="Scan"
+                  active={pathname === '/merchant/scan'}
+                />
+              )}
+              <Tab
+                href="/profile"
+                label="Profile"
+                active={pathname?.startsWith('/profile') ?? false}
+              />
             </div>
           </div>
         </nav>
