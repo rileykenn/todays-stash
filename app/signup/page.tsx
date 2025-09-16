@@ -1,65 +1,186 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Auth } from '@supabase/auth-ui-react';
-import { ThemeSupa } from '@supabase/auth-ui-shared';
+import { useState } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 
-function SignUpPage() {
-  const [origin, setOrigin] = useState('');
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      setOrigin(window.location.origin);
+export default function SignupPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  const [loading, setLoading] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function handleEmailAuth(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+
+    try {
+      // 1) Try sign-in first
+      const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
+
+      if (!signInErr && signInData?.session) {
+        router.replace('/consumer');
+        return;
+      }
+
+      // If invalid creds, try sign-up and ask to confirm email
+      const invalidCreds =
+        signInErr?.message?.toLowerCase().includes('invalid') ||
+        signInErr?.message?.toLowerCase().includes('credentials');
+
+      if (invalidCreds) {
+        const { error: upErr } = await sb.auth.signUp({
+          email: email.trim(),
+          password,
+          options: {
+            emailRedirectTo:
+              typeof window !== 'undefined' ? `${window.location.origin}/consumer` : undefined,
+          },
+        });
+        if (upErr) throw upErr;
+
+        setNotice('Check your email for the confirmation link to finish creating your account.');
+        return;
+      }
+
+      // If email exists but not confirmed
+      const needsConfirm =
+        signInErr?.message?.toLowerCase().includes('confirm') ||
+        signInErr?.message?.toLowerCase().includes('not confirmed');
+      if (needsConfirm) {
+        setNotice('Please confirm your email. We just sent you a new link.');
+        return;
+      }
+
+      if (signInErr) throw signInErr;
+    } catch (err: any) {
+      setError(err?.message ?? 'Something went wrong.');
+    } finally {
+      setLoading(false);
     }
-  }, []);
+  }
+
+  async function handleGoogle() {
+    setLoading(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const redirectTo =
+        typeof window !== 'undefined' ? `${window.location.origin}/consumer` : undefined;
+
+      const { error: oauthErr } = await sb.auth.signInWithOAuth({
+        provider: 'google',
+        options: { redirectTo },
+      });
+      if (oauthErr) throw oauthErr;
+      // Redirect handled by Supabase/Google
+    } catch (err: any) {
+      setError(err?.message ?? 'Google sign-in failed.');
+      setLoading(false);
+    }
+  }
 
   return (
-    <main style={{ maxWidth: 520, margin: '40px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 24, fontWeight: 800, marginBottom: 8 }}>Create your account</h1>
-      <p style={{ color: '#6b7280', marginBottom: 16 }}>
+    <main className="mx-auto max-w-screen-sm px-4 py-8 text-white">
+      <h1 className="text-3xl font-bold tracking-tight">Create your account</h1>
+      <p className="mt-2 text-white/70 text-sm">
         You can browse deals without an account. You’ll sign in when you redeem.
       </p>
 
-      <div
-        style={{
-          border: '1px solid #e5e7eb',
-          borderRadius: 12,
-          padding: 16,
-          marginBottom: 16,
-          background: '#fff',
-        }}
-      >
-        <Auth
-          supabaseClient={sb}
-          appearance={{ theme: ThemeSupa }}
-          providers={[]}
-          view="sign_up"
-          redirectTo={`${origin}/consumer`}
-        />
-      </div>
+      {/* Auth card */}
+      <section className="mt-6 rounded-2xl bg-[rgb(24_32_45)] border border-white/10 p-5">
+        <form onSubmit={handleEmailAuth} className="space-y-4">
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Email address</label>
+            <input
+              type="email"
+              required
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+            />
+          </div>
 
-      <div style={{ marginTop: 16, borderTop: '1px dashed #e5e7eb', paddingTop: 16 }}>
-        <div style={{ fontWeight: 700, marginBottom: 8 }}>Are you a business?</div>
-        <p style={{ color: '#6b7280', marginBottom: 8 }}>
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Password</label>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              placeholder="••••••••"
+              className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+            />
+          </div>
+
+          {error && (
+            <div className="rounded-xl p-3 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)] text-sm">
+              {error}
+            </div>
+          )}
+          {notice && (
+            <div className="rounded-xl p-3 bg-[color:rgb(16_185_129_/_0.18)] border border-[color:rgb(16_185_129_/_0.35)] text-[color:rgb(16_185_129)] text-sm">
+              {notice}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
+          >
+            {loading ? 'Please wait…' : 'Sign up / Sign in'}
+          </button>
+        </form>
+
+        <div className="mt-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-white/10" />
+          <span className="text-xs text-white/50">or</span>
+          <div className="h-px flex-1 bg-white/10" />
+        </div>
+
+        <button
+          onClick={handleGoogle}
+          disabled={loading}
+          className="mt-5 w-full rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 disabled:opacity-60"
+        >
+          Continue with Google
+        </button>
+
+        <p className="mt-4 text-xs text-white/50">
+          Already have an account?{' '}
+          <Link href="/signin" className="text-[var(--color-brand-600)] hover:underline">
+            Sign in
+          </Link>
+        </p>
+      </section>
+
+      {/* Merchant CTA */}
+      <section className="mt-8 border-t border-white/10 pt-6">
+        <h2 className="text-base font-semibold mb-1">Are you a business?</h2>
+        <p className="text-sm text-white/70 mb-3">
           List your business on Today’s Stash and start driving foot traffic.
         </p>
         <Link
           href="/merchant/apply"
-          style={{
-            display: 'inline-block',
-            padding: '10px 14px',
-            borderRadius: 10,
-            background: '#111827',
-            color: '#fff',
-            textDecoration: 'none',
-          }}
+          className="inline-block rounded-full px-5 py-3 bg-[color:rgb(17_24_39)] text-white border border-white/10 hover:bg-white/10"
         >
           Sign up as a merchant
         </Link>
-      </div>
+      </section>
+
+      <div className="h-24" />
     </main>
   );
 }
-
-export default SignUpPage;
