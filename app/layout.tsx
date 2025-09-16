@@ -145,29 +145,40 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         </main>
 
         {/* Bottom tabs */}
-        <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
-          <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
-            <div className="flex items-center">
-              <Tab
-                href="/consumer"
-                label="Home"
-                active={pathname?.startsWith('/consumer') ?? false}
-              />
-              {hasMerchant && (
-                <Tab
-                  href="/merchant/scan"
-                  label="Scan"
-                  active={pathname === '/merchant/scan'}
-                />
-              )}
-              <Tab
-                href="/profile"
-                label="Profile"
-                active={pathname?.startsWith('/profile') ?? false}
-              />
-            </div>
-          </div>
-        </nav>
+<nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
+  <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
+    <div className="flex items-center">
+      <Tab
+        href="/consumer"
+        label="Home"
+        active={pathname?.startsWith('/consumer') ?? false}
+      />
+
+      {hasMerchant && (
+        <Tab
+          href="/merchant/scan"
+          label="Scan"
+          active={pathname === '/merchant/scan'}
+        />
+      )}
+
+      {hasMerchant && (
+        <Tab
+          href="/merchant/offers"
+          label="Deals"
+          active={pathname?.startsWith('/merchant/offers') ?? false}
+        />
+      )}
+
+      <Tab
+        href="/profile"
+        label="Profile"
+        active={pathname?.startsWith('/profile') ?? false}
+      />
+    </div>
+  </div>
+</nav>
+
       </body>
     </html>
   );
