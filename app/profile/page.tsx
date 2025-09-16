@@ -12,7 +12,7 @@ type ViewModel = {
   isMerchant: boolean;
 };
 
-const POINT_TO_DOLLAR = 0.184; // adjust conversion if needed
+const POINT_TO_DOLLAR = 0.184; // adjust if needed
 
 export default function ProfilePage() {
   const [vm, setVm] = useState<ViewModel | null>(null);
@@ -20,16 +20,22 @@ export default function ProfilePage() {
 
   useEffect(() => {
     (async () => {
+      const { data: { user } } = await sb.auth.getUser();
+
+      // redirect if not logged in
+      if (!user) {
+        window.location.href = '/consumer';
+        return;
+      }
+
       try {
-        const [{ data: userRes }, freeRes, merchRes, rewardsRes, profRes] = await Promise.all([
-          sb.auth.getUser(),
+        const [freeRes, merchRes, rewardsRes, profRes] = await Promise.all([
           sb.rpc('get_free_remaining'),
           sb.rpc('get_my_merchant'),
           sb.rpc('get_referral_status'),
           sb.from('profiles').select('points').single(),
         ]);
 
-        const user = userRes.user;
         const redemptionsLeft =
           typeof freeRes.data === 'number'
             ? freeRes.data
@@ -45,7 +51,7 @@ export default function ProfilePage() {
         );
 
         setVm({
-          email: user?.email ?? '',
+          email: user.email ?? '',
           redemptionsLeft,
           savings,
           inRewards,
