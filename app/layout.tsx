@@ -6,6 +6,7 @@ import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
+import { ensureProfile } from '@/lib/ensureProfile';
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -16,20 +17,59 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   useEffect(() => {
     (async () => {
       const { data: { session } } = await sb.auth.getSession();
+
+      // ensure a profiles row exists for this user
+      await ensureProfile();
+
+      // capture ?ref=CODE exactly once per browser
+      if (typeof window !== 'undefined') {
+        const url = new URL(window.location.href);
+        const code = url.searchParams.get('ref');
+        const already = localStorage.getItem('tsappliedref');
+        if (code && !already) {
+          try {
+            await sb.rpc('apply_referral_code', { p_code: code });
+          } catch {
+            // swallow for MVP
+          } finally {
+            localStorage.setItem('tsappliedref', '1');
+            url.searchParams.delete('ref');
+            window.history.replaceState({}, '', url.toString());
+          }
+        }
+      }
+
+      // existing header data
       if (session) {
         try {
           const free = await sb.rpc('get_free_remaining');
-          const val = typeof free.data === 'number' ? free.data : (free.data as any)?.remaining;
+          const val =
+            typeof free.data === 'number' ? free.data : (free.data as any)?.remaining;
           if (typeof val === 'number') setFreeLeft(val);
         } catch {}
       }
-      try { const admin = await sb.rpc('is_admin'); setIsAdmin(!!admin.data); } catch {}
-      try { const { data } = await sb.rpc('get_my_merchant'); setHasMerchant(!!data); } catch { setHasMerchant(false); }
+
+      try {
+        const admin = await sb.rpc('is_admin');
+        setIsAdmin(!!admin.data);
+      } catch {}
+
+      try {
+        const { data } = await sb.rpc('get_my_merchant');
+        setHasMerchant(!!data);
+      } catch {
+        setHasMerchant(false);
+      }
     })();
   }, []);
 
   const Tab = ({ href, label, active }: { href: string; label: string; active: boolean }) => (
-    <Link href={href} className={`flex-1 text-center py-3 text-sm ${active ? 'text-[var(--color-brand-600)] font-semibold' : 'text-white/70'}`}>
+    <Link
+      href={href}
+      className={`flex-1 text-center py-3 text-sm ${
+        active ? 'text-[var(--color-brand-600)] font-semibold' : 'text-white/70'
+      }`}
+    >
       {label}
     </Link>
   );
@@ -40,7 +80,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <div className="sticky top-0 z-40 backdrop-blur border-b border-white/10 bg-[color:rgb(18_24_33_/_0.8)]">
           <div className="mx-auto max-w-screen-sm px-4 pt-[env(safe-area-inset-top)]">
             <div className="h-14 flex items-center justify-between">
-              <Link href="/consumer" className="font-bold tracking-tight">Today’s Stash</Link>
+              <Link href="/consumer" className="font-bold tracking-tight">
+                Today’s Stash
+              </Link>
 
               <div className="flex items-center gap-3">
                 {/* Bell icon entry (no-op for MVP) */}
@@ -64,7 +106,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                   </div>
                 )}
                 {isAdmin && (
-                  <Link href="/admin" className="text-xs opacity-80 hover:opacity-100">Admin</Link>
+                  <Link href="/admin" className="text-xs opacity-80 hover:opacity-100">
+                    Admin
+                  </Link>
                 )}
               </div>
             </div>
