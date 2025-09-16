@@ -97,7 +97,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
 
   return (
     <html lang="en">
-      <body className="bg-[var(--color-ink-900)] text-white antialiased">
+      <body className="bg-[color:rgb(10_15_20)] text-white antialiased">
         {/* Top app bar */}
         <div className="sticky top-0 z-40 backdrop-blur border-b border-white/10 bg-[color:rgb(18_24_33_/_0.8)]">
           <div className="mx-auto max-w-screen-sm px-4 pt-[env(safe-area-inset-top)]">
