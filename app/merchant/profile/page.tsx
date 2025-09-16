@@ -1,8 +1,16 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
+
+type Merchant = {
+  id: string;
+  name: string | null;
+  address: string | null;
+  photo_url: string | null;
+};
 
 export default function MerchantProfilePage() {
   const router = useRouter();
@@ -10,73 +18,110 @@ export default function MerchantProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [ok, setOk] = useState<string | null>(null);
 
-  const [merchantId, setMerchantId] = useState<string | null>(null);
-  const [currentPhoto, setCurrentPhoto] = useState<string | null>(null);
+  const [merchant, setMerchant] = useState<Merchant | null>(null);
+
+  // form fields
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState(''); // may be empty for old test merchants
+  const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
-  const previewUrl = useMemo(() => (file ? URL.createObjectURL(file) : currentPhoto), [file, currentPhoto]);
+
+  // validation
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  const previewUrl = useMemo(() => {
+    if (file) return URL.createObjectURL(file);
+    return photoUrl ?? null;
+  }, [file, photoUrl]);
+
+  function validateAll() {
+    const errs: Record<string, string> = {};
+    if (!name.trim()) errs.name = 'Business name is required.';
+    if (!address.trim()) errs.address = 'Business address is required.';
+    setFieldErrors(errs);
+    return errs;
+  }
 
   useEffect(() => {
     let mounted = true;
+    (async () => {
+      try {
+        const { data: { session } } = await sb.auth.getSession();
+        if (!session) { router.replace('/merchant/login'); return; }
 
-    async function init() {
-      const { data: { session } } = await sb.auth.getSession();
-      if (!session) {
-        router.replace('/merchant/login');
-        return;
+        const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
+        if (mErr) throw mErr;
+        if (!mid) { setError('This account is not linked to a merchant.'); return; }
+
+        const { data, error } = await sb
+          .from('merchants')
+          .select('id,name,address,photo_url')
+          .eq('id', mid as string)
+          .single();
+        if (error) throw error;
+
+        if (!mounted) return;
+        const m = data as Merchant;
+        setMerchant(m);
+        setName(m.name ?? '');
+        setAddress(m.address ?? ''); // can be empty for legacy merchants
+        setPhotoUrl(m.photo_url ?? null);
+      } catch (e: any) {
+        if (!mounted) return;
+        setError(e?.message ?? 'Failed to load merchant profile');
+      } finally {
+        if (mounted) setLoading(false);
       }
+    })();
 
-      const { data: mid, error: mErr } = await sb.rpc('get_my_merchant');
-      if (mErr) { setError(mErr.message); setLoading(false); return; }
-      if (!mid) { setError('No merchant linked to this account.'); setLoading(false); return; }
-      const merchant_id = mid as string;
-
-      const { data: merchant, error: e2 } = await sb
-        .from('merchants')
-        .select('photo_url')
-        .eq('id', merchant_id)
-        .single();
-      if (e2) { setError(e2.message); setLoading(false); return; }
-
-      if (!mounted) return;
-      setMerchantId(merchant_id);
-      setCurrentPhoto(merchant?.photo_url ?? null);
-      setLoading(false);
-    }
-
-    init();
     return () => { mounted = false; };
   }, [router]);
 
   async function save() {
-    if (!merchantId) return;
+    setOk(null);
+    const errs = validateAll();
+    if (Object.keys(errs).length > 0 || !merchant) {
+      setTouched({ name: true, address: true });
+      return;
+    }
+
     setSaving(true);
     setError(null);
 
     try {
-      let photo_url = currentPhoto;
+      let newPhotoUrl = photoUrl ?? null;
 
+      // upload new photo if provided
       if (file) {
-        const path = `${merchantId}/photo.jpg`;
-        const { error: upErr } = await sb
-          .storage
+        const path = `${merchant.id}/profile.jpg`;
+        const { error: upErr } = await sb.storage
           .from('merchant-media')
           .upload(path, file, { upsert: true, contentType: file.type || 'image/jpeg' });
         if (upErr) throw upErr;
+
         const { data: pub } = sb.storage.from('merchant-media').getPublicUrl(path);
-        photo_url = pub.publicUrl;
+        newPhotoUrl = pub.publicUrl;
       }
+
+      const payload = {
+        name: name.trim(),
+        address: address.trim(),
+        photo_url: newPhotoUrl,
+      };
 
       const { error: updErr } = await sb
         .from('merchants')
-        .update({ photo_url })
-        .eq('id', merchantId);
+        .update(payload)
+        .eq('id', merchant.id);
       if (updErr) throw updErr;
 
-      router.replace('/merchant');
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
-      setError(msg);
+      setPhotoUrl(newPhotoUrl);
+      setOk('Changes saved.');
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to save changes');
     } finally {
       setSaving(false);
     }
@@ -84,47 +129,111 @@ export default function MerchantProfilePage() {
 
   if (loading) {
     return (
-      <main style={{ maxWidth: 720, margin: '32px auto', padding: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Business Profile</h1>
-        <div>Loading…</div>
+      <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+        <h1 className="text-xl font-bold mb-4">Business Profile</h1>
+        <div className="h-24 rounded-2xl bg-white/10 animate-pulse" />
+      </main>
+    );
+  }
+
+  if (error) {
+    return (
+      <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+        <h1 className="text-xl font-bold mb-4">Business Profile</h1>
+        <div className="rounded-2xl p-4 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)]">
+          {error}
+        </div>
       </main>
     );
   }
 
   return (
-    <main style={{ maxWidth: 720, margin: '32px auto', padding: 16 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 700, marginBottom: 12 }}>Business Profile</h1>
+    <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold">Business Profile</h1>
+        <Link
+          href="/merchant/offers"
+          className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+        >
+          Back to Deals
+        </Link>
+      </div>
 
-      {error && (
-        <div style={{ marginBottom: 12, padding: 12, borderRadius: 8, background: '#fee2e2', color: '#991b1b' }}>{error}</div>
-      )}
+      {/* Photo card */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5">
+        <p className="text-sm font-semibold text-white/80 mb-3">Profile photo</p>
+        <div className="flex items-center gap-4">
+          <div className="w-24 h-24 rounded-xl overflow-hidden bg-black/20 border border-white/10 shrink-0">
+            {previewUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={previewUrl} alt="Business" className="w-full h-full object-cover" />
+            ) : (
+              <div className="w-full h-full grid place-items-center text-white/40 text-xs">No photo</div>
+            )}
+          </div>
 
-      <div style={{ display: 'grid', gap: 12 }}>
-        <div style={{ width: 180, height: 180, borderRadius: 12, overflow: 'hidden', background: '#f3f4f6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          {previewUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={previewUrl} alt="Business" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
-          ) : (
-            <span style={{ fontSize: 12, color: '#9ca3af' }}>No photo</span>
+          <label className="inline-flex items-center gap-2 text-sm rounded-full px-3 py-2 bg-white/10 border border-white/10 hover:bg-white/15 cursor-pointer">
+            Change photo
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => setFile(e.target.files?.[0] || null)}
+            />
+          </label>
+        </div>
+      </section>
+
+      {/* Form card */}
+      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5 space-y-4">
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Business name</label>
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, name: true }))}
+            placeholder="e.g., Bella’s Cafe"
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.name && fieldErrors.name ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+          />
+          {touched.name && fieldErrors.name && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.name}</p>
           )}
         </div>
 
-        <label style={{ display: 'grid', gap: 6 }}>
-          <span style={{ fontWeight: 600 }}>Upload new photo</span>
-          <input type="file" accept="image/*" onChange={(e) => setFile(e.target.files?.[0] || null)} />
-        </label>
-
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button
-            onClick={save}
-            disabled={saving}
-            style={{ padding: '10px 14px', borderRadius: 10, background: '#10b981', color: 'white', fontWeight: 600 }}
-          >
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-          <a href="/merchant" style={{ padding: '10px 14px', borderRadius: 10, border: '1px solid #e5e7eb' }}>Cancel</a>
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Business address</label>
+          <input
+            value={address}
+            onChange={(e) => setAddress(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, address: true }))}
+            placeholder="Street, suburb, state"
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.address && fieldErrors.address ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
+          />
+          {touched.address && fieldErrors.address && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.address}</p>
+          )}
+          <p className="mt-1 text-xs text-white/50">
+            This was optional for early test merchants — please add it now so customers can find you.
+          </p>
         </div>
-      </div>
+      </section>
+
+      {/* Actions / status */}
+      {ok && <div className="mb-3 rounded-2xl p-3 bg-[color:rgb(16_185_129_/_0.18)] border border-[color:rgb(16_185_129_/_0.35)] text-[color:rgb(16_185_129)]">{ok}</div>}
+      {error && <div className="mb-3 rounded-2xl p-3 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)]">{error}</div>}
+
+      <button
+        onClick={save}
+        disabled={saving}
+        className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
+      >
+        {saving ? 'Saving…' : 'Submit Changes'}
+      </button>
+
+      {/* Spacer for bottom nav */}
+      <div className="h-24" />
     </main>
   );
 }
