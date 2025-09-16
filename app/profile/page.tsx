@@ -7,12 +7,12 @@ import { sb } from '@/lib/supabaseBrowser';
 type ViewModel = {
   email: string;
   redemptionsLeft: number;
-  savings: number;                  // total $ saved (approx via points→$)
-  inRewards: boolean;               // has referral_code
-  isMerchant: boolean;              // has merchant row
+  savings: number;
+  inRewards: boolean;
+  isMerchant: boolean;
 };
 
-const POINT_TO_DOLLAR = 0.184;      // adjust if you change point_rules or want exact calc
+const POINT_TO_DOLLAR = 0.184; // adjust conversion if needed
 
 export default function ProfilePage() {
   const [vm, setVm] = useState<ViewModel | null>(null);
@@ -26,18 +26,23 @@ export default function ProfilePage() {
           sb.rpc('get_free_remaining'),
           sb.rpc('get_my_merchant'),
           sb.rpc('get_referral_status'),
-          sb.from('profiles').select('points').single(), // points → savings proxy
+          sb.from('profiles').select('points').single(),
         ]);
 
         const user = userRes.user;
         const redemptionsLeft =
-          typeof freeRes.data === 'number' ? freeRes.data : (freeRes.data as any)?.remaining ?? 0;
+          typeof freeRes.data === 'number'
+            ? freeRes.data
+            : (freeRes.data as any)?.remaining ?? 0;
 
         const inRewards = !!rewardsRes.data?.referral_code;
         const isMerchant = !!merchRes.data;
 
         const points: number = profRes.data?.points ?? 0;
-        const savings = Math.max(0, Math.round(points * POINT_TO_DOLLAR * 100) / 100);
+        const savings = Math.max(
+          0,
+          Math.round(points * POINT_TO_DOLLAR * 100) / 100
+        );
 
         setVm({
           email: user?.email ?? '',
@@ -53,94 +58,110 @@ export default function ProfilePage() {
   }, []);
 
   async function joinRewards() {
-    // enrolling = mint (or fetch) referral code; having one = "in rewards"
     await sb.rpc('get_or_create_referral_code');
     const res = await sb.rpc('get_referral_status');
-    setVm((prev) => prev ? { ...prev, inRewards: !!res.data?.referral_code } : prev);
+    setVm((prev) =>
+      prev ? { ...prev, inRewards: !!res.data?.referral_code } : prev
+    );
+  }
+
+  async function handleSignOut() {
+    await sb.auth.signOut();
+    window.location.href = '/consumer';
   }
 
   if (loading || !vm) {
     return (
       <div className="mx-auto max-w-screen-sm px-4 py-6 text-white">
-        <div className="h-4 w-32 rounded bg-white/10 animate-pulse mb-4" />
+        <div className="h-5 w-32 rounded bg-white/10 animate-pulse mb-4" />
         <div className="h-24 rounded-xl bg-white/10 animate-pulse" />
       </div>
     );
   }
 
   return (
-    <div className="mx-auto max-w-screen-sm px-4 py-5 text-white min-h-[calc(100vh-140px)]">
-      <h1 className="text-xl font-bold mb-4">Profile</h1>
+    <div className="mx-auto max-w-screen-sm px-4 py-6 text-white min-h-[calc(100vh-140px)]">
+      <h1 className="text-2xl font-bold mb-6">Profile</h1>
 
-      {/* Email card */}
-      <section className="bg-[rgb(30_41_59)] rounded-2xl p-4 mb-4">
-        <p className="text-xs text-white/60">Signed in</p>
-        <p className="text-sm font-semibold break-all">{vm.email}</p>
+      {/* Account */}
+      <p className="text-sm font-semibold text-white/70 mb-2">Account</p>
+      <section className="bg-[rgb(30_41_59)] rounded-2xl p-4 mb-6">
+        <p className="text-xs text-white/60">Signed in as</p>
+        <p className="text-base font-medium break-all">{vm.email}</p>
       </section>
 
       {/* Stats */}
-      <section className="grid grid-cols-2 gap-3 mb-4">
+      <p className="text-sm font-semibold text-white/70 mb-2">Stats</p>
+      <section className="grid grid-cols-2 gap-3 mb-6">
         <div className="bg-[rgb(30_41_59)] rounded-2xl p-4">
           <p className="text-xs text-white/60">Savings so far</p>
-          <p className="text-2xl font-extrabold tracking-tight">${vm.savings.toFixed(2)}</p>
+          <p className="text-2xl font-extrabold">${vm.savings.toFixed(2)}</p>
         </div>
         <div className="bg-[rgb(30_41_59)] rounded-2xl p-4">
           <p className="text-xs text-white/60">Free left</p>
-          <p className="text-2xl font-extrabold tracking-tight">{vm.redemptionsLeft}</p>
+          <p className="text-2xl font-extrabold">{vm.redemptionsLeft}</p>
         </div>
       </section>
 
-      {/* Rewards CTA or link */}
+      {/* Rewards */}
+      <p className="text-sm font-semibold text-white/70 mb-2">Rewards</p>
       {!vm.inRewards ? (
-        <section className="bg-[rgb(30_41_59)] rounded-2xl p-4 mb-4 text-center">
-          <p className="text-sm mb-3">
-            Join the Rewards Program to start earning free scans from redemptions & referrals.
+        <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6 text-center">
+          <p className="text-sm mb-4">
+            Join the Rewards Program to start earning free scans from
+            redemptions & referrals.
           </p>
           <button
             onClick={joinRewards}
-            className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.99] transition animate-[pulse-soft_2s_ease-in-out_infinite]"
+            className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.98] transition animate-[pulse-soft_2s_ease-in-out_infinite]"
           >
             Join Rewards
           </button>
         </section>
       ) : (
-        <section className="bg-[rgb(30_41_59)] rounded-2xl p-4 mb-4">
-          <p className="text-sm">You’re in the Rewards Program. Earn points via referrals and redemptions.</p>
+        <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6">
+          <p className="text-sm">
+            You’re in the Rewards Program. Earn points via referrals and
+            redemptions.
+          </p>
           <Link
             href="/"
             className="inline-block mt-3 text-sm rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
           >
-            Get referral link (Home banner)
+            Get referral link
           </Link>
         </section>
       )}
 
-      {/* Merchant-only actions */}
+      {/* Merchant actions */}
       {vm.isMerchant && (
-        <section className="bg-[rgb(30_41_59)] rounded-2xl p-4 mb-4">
-          <p className="text-sm mb-3 text-white/80">Merchant</p>
-          <div className="flex gap-3">
-            <Link
-              href="/merchant"
-              className="flex-1 text-center rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.99] transition"
-            >
-              My deals
-            </Link>
-            <Link
-              href="/merchant/scan"
-              className="flex-1 text-center rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 active:scale-[0.99] transition"
-            >
-              Scan
-            </Link>
-          </div>
-        </section>
+        <>
+          <p className="text-sm font-semibold text-white/70 mb-2">Merchant</p>
+          <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6">
+            <div className="flex gap-3">
+              <Link
+                href="/merchant"
+                className="flex-1 text-center rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.98] transition"
+              >
+                My deals
+              </Link>
+              <Link
+                href="/merchant/scan"
+                className="flex-1 text-center rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 active:scale-[0.98] transition"
+              >
+                Scan
+              </Link>
+            </div>
+          </section>
+        </>
       )}
 
       {/* Sign out */}
-      <section className="pt-2">
+      <p className="text-sm font-semibold text-white/70 mb-2">Account Actions</p>
+      <section>
         <button
-          onClick={async () => { await sb.auth.signOut(); window.location.href = '/consumer'; }}
-          className="w-full rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 active:scale-[0.99] transition"
+          onClick={handleSignOut}
+          className="w-full rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 active:scale-[0.98] transition"
         >
           Sign out
         </button>
