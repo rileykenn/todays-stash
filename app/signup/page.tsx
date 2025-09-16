@@ -28,7 +28,9 @@ export default function SignupPage() {
       });
 
       if (!signInErr && signInData?.session) {
-        router.replace('/consumer');
+        if (typeof window !== 'undefined') {
+  window.location.href = '/consumer'; // full reload to consumer page
+}
         // Force a single hard refresh so layout chips/tabs pick up the fresh session
         if (typeof window !== 'undefined') window.location.reload();
         return;
