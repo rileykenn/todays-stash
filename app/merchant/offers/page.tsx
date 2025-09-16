@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
@@ -25,21 +25,9 @@ type Merchant = {
 export default function MerchantOffersPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
-  const [savingBiz, setSavingBiz] = useState(false);
   const [merchant, setMerchant] = useState<Merchant | null>(null);
   const [offers, setOffers] = useState<Offer[]>([]);
   const [error, setError] = useState<string | null>(null);
-
-  // Form state for biz header
-  const [bizName, setBizName] = useState('');
-  const [bizAddress, setBizAddress] = useState('');
-  const [bizPhoto, setBizPhoto] = useState<string | null>(null);
-  const [bizFile, setBizFile] = useState<File | null>(null);
-
-  const previewBizPhoto = useMemo(() => {
-    if (bizFile) return URL.createObjectURL(bizFile);
-    return bizPhoto || null;
-  }, [bizFile, bizPhoto]);
 
   useEffect(() => {
     let mounted = true;
@@ -76,9 +64,6 @@ export default function MerchantOffersPage() {
         if (!mounted) return;
         const merch = (m as Merchant) ?? { id: merchant_id, name: '', address: '', photo_url: null };
         setMerchant(merch);
-        setBizName(merch.name ?? '');
-        setBizAddress(merch.address ?? '');
-        setBizPhoto(merch.photo_url ?? null);
         setOffers((os || []) as Offer[]);
       } catch (e: any) {
         if (!mounted) return;
@@ -91,37 +76,6 @@ export default function MerchantOffersPage() {
     init();
     return () => { mounted = false; };
   }, [router]);
-
-  async function saveBizHeader() {
-    if (!merchant) return;
-    setSavingBiz(true);
-    setError(null);
-    try {
-      let photo_url = bizPhoto ?? null;
-
-      if (bizFile) {
-        const path = `${merchant.id}/profile.jpg`;
-        const { error: upErr } = await sb.storage.from('merchant-media')
-          .upload(path, bizFile, { upsert: true, contentType: bizFile.type || 'image/jpeg' });
-        if (upErr) throw upErr;
-        const { data: pub } = sb.storage.from('merchant-media').getPublicUrl(path);
-        photo_url = pub.publicUrl;
-      }
-
-      const { error: updErr } = await sb
-        .from('merchants')
-        .update({ name: bizName.trim() || null, address: bizAddress.trim() || null, photo_url })
-        .eq('id', merchant.id);
-      if (updErr) throw updErr;
-
-      setBizPhoto(photo_url);
-      setMerchant({ ...merchant, name: bizName.trim() || null, address: bizAddress.trim() || null, photo_url });
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to save business profile');
-    } finally {
-      setSavingBiz(false);
-    }
-  }
 
   async function toggleActive(offer: Offer) {
     const next = !(offer.active ?? true);
@@ -159,67 +113,44 @@ export default function MerchantOffersPage() {
 
   return (
     <main className="mx-auto max-w-screen-sm px-4 py-6 text-white">
-      {/* Header */}
-      <h1 className="text-2xl font-bold mb-4">My Deals</h1>
-
-      {/* Business profile card */}
-      <section className="bg-[rgb(24_32_45)] rounded-2xl p-4 border border-white/10 mb-5">
-        <div className="flex items-center gap-3">
-          <div className="w-16 h-16 rounded-xl overflow-hidden bg-black/20 border border-white/10 shrink-0">
-            {previewBizPhoto ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={previewBizPhoto} alt="Business" className="w-full h-full object-cover" />
-            ) : (
-              <div className="w-full h-full grid place-items-center text-white/40 text-xs">No photo</div>
-            )}
-          </div>
-
-          <div className="flex-1">
-            <input
-              value={bizName}
-              onChange={(e) => setBizName(e.target.value)}
-              placeholder="Business name"
-              className="w-full bg-transparent text-white placeholder:text-white/40 text-sm border-b border-white/10 focus:outline-none focus:border-[var(--color-brand-600)]"
-            />
-            <input
-              value={bizAddress}
-              onChange={(e) => setBizAddress(e.target.value)}
-              placeholder="Business address"
-              className="mt-2 w-full bg-transparent text-white placeholder:text-white/40 text-sm border-b border-white/10 focus:outline-none focus:border-[var(--color-brand-600)]"
-            />
-          </div>
-
-          <label className="text-xs rounded-full px-3 py-2 bg-white/10 border border-white/10 hover:bg-white/15 cursor-pointer">
-            Change
-            <input
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => setBizFile(e.target.files?.[0] ?? null)}
-            />
-          </label>
-        </div>
-
-        <div className="mt-3 flex gap-2">
-          <button
-            onClick={saveBizHeader}
-            disabled={savingBiz}
-            className="rounded-full px-4 py-2 bg-[var(--color-brand-600)] font-semibold hover:brightness-110 disabled:opacity-60"
+      {/* Page header with actions */}
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold">My Deals</h1>
+        <div className="flex gap-2">
+          <Link
+            href="/merchant/profile"
+            className="rounded-full px-4 py-2 bg-[color:rgb(59_130_246)] text-white font-medium hover:brightness-110 transition"
           >
-            {savingBiz ? 'Saving…' : 'Save Profile'}
-          </button>
+            Edit Business Profile
+          </Link>
           <Link
             href="/merchant/offers/new"
-            className="rounded-full px-4 py-2 bg-white/10 border border-white/10 hover:bg-white/15"
+            className="rounded-full px-4 py-2 bg-[var(--color-brand-600)] text-white font-semibold hover:brightness-110 transition"
           >
             New Deal
           </Link>
         </div>
-      </section>
+      </div>
 
-      {/* Offers list */}
+      {/* Empty state or list */}
       {offers.length === 0 ? (
-        <div className="text-white/60 text-sm">No offers yet. Create your first one.</div>
+        <section className="rounded-2xl p-5 bg-[rgb(24_32_45)] border border-white/10 text-center">
+          <div className="mx-auto w-14 h-14 rounded-2xl bg-black/20 grid place-items-center text-white/50">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </div>
+          <h2 className="mt-3 text-base font-semibold">No deals yet</h2>
+          <p className="mt-1 text-sm text-white/60">
+            Create your first deal to start appearing in the consumer feed.
+          </p>
+          <Link
+            href="/merchant/offers/new"
+            className="mt-4 inline-block rounded-full px-5 py-3 bg-[var(--color-brand-600)] font-semibold hover:brightness-110"
+          >
+            + New Deal
+          </Link>
+        </section>
       ) : (
         <ul className="space-y-3">
           {offers.map((o) => (
@@ -290,14 +221,6 @@ export default function MerchantOffersPage() {
 
       {/* Spacer for bottom nav */}
       <div className="h-24" />
-
-      {/* Floating New Deal button */}
-      <Link
-        href="/merchant/offers/new"
-        className="fixed bottom-[calc(env(safe-area-inset-bottom)+88px)] right-4 z-40 rounded-full px-5 py-3 bg-[var(--color-brand-600)] font-semibold shadow-lg hover:brightness-110"
-      >
-        + New Deal
-      </Link>
     </main>
   );
 }
