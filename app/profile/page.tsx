@@ -57,12 +57,6 @@ export default function ProfilePage() {
     })();
   }, []);
 
-  async function joinRewards() {
-    await sb.rpc('get_or_create_referral_code');
-    const res = await sb.rpc('get_referral_status');
-    setVm((prev) => (prev ? { ...prev, inRewards: !!res.data?.referral_code } : prev));
-  }
-
   async function handleSignOut() {
     await sb.auth.signOut();
     window.location.href = '/consumer';
@@ -108,12 +102,12 @@ export default function ProfilePage() {
           <p className="text-sm mb-4">
             Join the Rewards Program to start earning free scans from redemptions & referrals.
           </p>
-          <button
-            onClick={joinRewards}
-            className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.98] transition animate-[pulse-soft_2s_ease-in-out_infinite]"
+          <Link
+            href="/rewards/join"
+            className="block w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 active:scale-[0.98] transition text-center"
           >
             Join Rewards
-          </button>
+          </Link>
         </section>
       ) : (
         <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6">
