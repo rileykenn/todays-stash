@@ -7,12 +7,10 @@ import { sb } from '@/lib/supabaseBrowser';
 type ViewModel = {
   email: string;
   redemptionsLeft: number;
-  savings: number;
-  inRewards: boolean;
-  isMerchant: boolean;
+  savings: number;     // read directly from DB
+  inRewards: boolean;  // has referral_code
+  isMerchant: boolean; // has merchant row
 };
-
-const POINT_TO_DOLLAR = 0.184; // adjust if needed
 
 export default function ProfilePage() {
   const [vm, setVm] = useState<ViewModel | null>(null);
@@ -22,18 +20,19 @@ export default function ProfilePage() {
     (async () => {
       const { data: { user } } = await sb.auth.getUser();
 
-      // redirect if not logged in
+      // Redirect if not logged in
       if (!user) {
         window.location.href = '/consumer';
         return;
       }
 
       try {
+        // Fetch all needed data in parallel
         const [freeRes, merchRes, rewardsRes, profRes] = await Promise.all([
           sb.rpc('get_free_remaining'),
           sb.rpc('get_my_merchant'),
           sb.rpc('get_referral_status'),
-          sb.from('profiles').select('points').single(),
+          sb.from('profiles').select('savings').single(),
         ]);
 
         const redemptionsLeft =
@@ -43,12 +42,7 @@ export default function ProfilePage() {
 
         const inRewards = !!rewardsRes.data?.referral_code;
         const isMerchant = !!merchRes.data;
-
-        const points: number = profRes.data?.points ?? 0;
-        const savings = Math.max(
-          0,
-          Math.round(points * POINT_TO_DOLLAR * 100) / 100
-        );
+        const savings: number = Number(profRes.data?.savings ?? 0);
 
         setVm({
           email: user.email ?? '',
@@ -66,9 +60,7 @@ export default function ProfilePage() {
   async function joinRewards() {
     await sb.rpc('get_or_create_referral_code');
     const res = await sb.rpc('get_referral_status');
-    setVm((prev) =>
-      prev ? { ...prev, inRewards: !!res.data?.referral_code } : prev
-    );
+    setVm((prev) => (prev ? { ...prev, inRewards: !!res.data?.referral_code } : prev));
   }
 
   async function handleSignOut() {
@@ -114,8 +106,7 @@ export default function ProfilePage() {
       {!vm.inRewards ? (
         <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6 text-center">
           <p className="text-sm mb-4">
-            Join the Rewards Program to start earning free scans from
-            redemptions & referrals.
+            Join the Rewards Program to start earning free scans from redemptions & referrals.
           </p>
           <button
             onClick={joinRewards}
@@ -127,8 +118,7 @@ export default function ProfilePage() {
       ) : (
         <section className="bg-[rgb(30_41_59)] rounded-2xl p-5 mb-6">
           <p className="text-sm">
-            You’re in the Rewards Program. Earn points via referrals and
-            redemptions.
+            You’re in the Rewards Program. Earn points via referrals and redemptions.
           </p>
           <Link
             href="/"
@@ -162,7 +152,7 @@ export default function ProfilePage() {
         </>
       )}
 
-      {/* Sign out */}
+      {/* Account actions */}
       <p className="text-sm font-semibold text-white/70 mb-2">Account Actions</p>
       <section>
         <button
