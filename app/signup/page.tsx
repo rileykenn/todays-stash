@@ -21,7 +21,7 @@ export default function SignupPage() {
     setNotice(null);
 
     try {
-      // 1) Try sign-in first
+      // Try sign-in first (existing users)
       const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({
         email: email.trim(),
         password,
@@ -29,10 +29,12 @@ export default function SignupPage() {
 
       if (!signInErr && signInData?.session) {
         router.replace('/consumer');
+        // Force a single hard refresh so layout chips/tabs pick up the fresh session
+        if (typeof window !== 'undefined') window.location.reload();
         return;
       }
 
-      // If invalid creds, try sign-up and ask to confirm email
+      // If invalid credentials, attempt sign-up (new user)
       const invalidCreds =
         signInErr?.message?.toLowerCase().includes('invalid') ||
         signInErr?.message?.toLowerCase().includes('credentials');
@@ -57,7 +59,7 @@ export default function SignupPage() {
         signInErr?.message?.toLowerCase().includes('confirm') ||
         signInErr?.message?.toLowerCase().includes('not confirmed');
       if (needsConfirm) {
-        setNotice('Please confirm your email. We just sent you a new link.');
+        setNotice('Please confirm your email to finish signing in. We just sent you a link.');
         return;
       }
 
@@ -82,7 +84,8 @@ export default function SignupPage() {
         options: { redirectTo },
       });
       if (oauthErr) throw oauthErr;
-      // Redirect handled by Supabase/Google
+      // Supabase handles redirect; on return, /consumer loads and layout picks up session.
+      // If you still want to hard-refresh after returning, add a small script on /consumer.
     } catch (err: any) {
       setError(err?.message ?? 'Google sign-in failed.');
       setLoading(false);
