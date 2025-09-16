@@ -8,60 +8,85 @@ import { usePathname } from 'next/navigation';
 import { sb } from '@/lib/supabaseBrowser';
 import { ensureProfile } from '@/lib/ensureProfile';
 
+// Optional: only import if the file exists.
+// If you haven't added the file yet, comment the next line out.
+import ReferralBanner from '@/components/ReferralBanner';
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [freeLeft, setFreeLeft] = useState<number | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [hasMerchant, setHasMerchant] = useState<boolean | null>(null);
+  const [showBanner, setShowBanner] = useState(true); // if banner throws, we hide it so layout keeps rendering
 
   useEffect(() => {
     (async () => {
-      const { data: { session } } = await sb.auth.getSession();
+      try {
+        const { data: { session } } = await sb.auth.getSession();
 
-      // ensure a profiles row exists for this user
-      await ensureProfile();
+        // Ensure a profiles row exists
+        await ensureProfile();
 
-      // capture ?ref=CODE exactly once per browser
-      if (typeof window !== 'undefined') {
-        const url = new URL(window.location.href);
-        const code = url.searchParams.get('ref');
-        const already = localStorage.getItem('tsappliedref');
-        if (code && !already) {
-          try {
-            await sb.rpc('apply_referral_code', { p_code: code });
-          } catch {
-            // swallow for MVP
-          } finally {
-            localStorage.setItem('tsappliedref', '1');
-            url.searchParams.delete('ref');
-            window.history.replaceState({}, '', url.toString());
+        // Capture ?ref=CODE exactly once
+        if (typeof window !== 'undefined') {
+          const url = new URL(window.location.href);
+          const code = url.searchParams.get('ref');
+          const already = localStorage.getItem('tsappliedref');
+          if (code && !already) {
+            try {
+              await sb.rpc('apply_referral_code', { p_code: code });
+            } catch {
+              // swallow for MVP
+            } finally {
+              localStorage.setItem('tsappliedref', '1');
+              url.searchParams.delete('ref');
+              window.history.replaceState({}, '', url.toString());
+            }
           }
         }
-      }
 
-      // existing header data
-      if (session) {
+        // Header chips
+        if (session) {
+          try {
+            const free = await sb.rpc('get_free_remaining');
+            const val =
+              typeof free.data === 'number' ? free.data : (free.data as any)?.remaining;
+            if (typeof val === 'number') setFreeLeft(val);
+          } catch {}
+        }
+
         try {
-          const free = await sb.rpc('get_free_remaining');
-          const val =
-            typeof free.data === 'number' ? free.data : (free.data as any)?.remaining;
-          if (typeof val === 'number') setFreeLeft(val);
+          const admin = await sb.rpc('is_admin');
+          setIsAdmin(!!admin.data);
         } catch {}
-      }
 
-      try {
-        const admin = await sb.rpc('is_admin');
-        setIsAdmin(!!admin.data);
-      } catch {}
-
-      try {
-        const { data } = await sb.rpc('get_my_merchant');
-        setHasMerchant(!!data);
+        try {
+          const { data } = await sb.rpc('get_my_merchant');
+          setHasMerchant(!!data);
+        } catch {
+          setHasMerchant(false);
+        }
       } catch {
-        setHasMerchant(false);
+        // If anything unexpected happens, still render layout
       }
     })();
   }, []);
+
+  // safe wrapper for banner so it can’t crash the layout
+  const BannerSlot = () => {
+    if (!showBanner) return null;
+    try {
+      return (
+        <div className="mx-auto max-w-screen-sm px-4 mt-2">
+          {/* Comment out the next line if you haven’t added the component yet */}
+          <ReferralBanner />
+        </div>
+      );
+    } catch {
+      setShowBanner(false);
+      return null;
+    }
+  };
 
   const Tab = ({ href, label, active }: { href: string; label: string; active: boolean }) => (
     <Link
@@ -77,15 +102,14 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <body className="bg-[var(--color-ink-900)] text-white antialiased">
+        {/* Top app bar */}
         <div className="sticky top-0 z-40 backdrop-blur border-b border-white/10 bg-[color:rgb(18_24_33_/_0.8)]">
           <div className="mx-auto max-w-screen-sm px-4 pt-[env(safe-area-inset-top)]">
             <div className="h-14 flex items-center justify-between">
               <Link href="/consumer" className="font-bold tracking-tight">
                 Today’s Stash
               </Link>
-
               <div className="flex items-center gap-3">
-                {/* Bell icon entry (no-op for MVP) */}
                 <button
                   aria-label="Notifications"
                   className="relative w-9 h-9 rounded-full bg-[color:rgb(26_35_48_/_0.9)] border border-white/10 grid place-items-center hover:brightness-110 transition"
@@ -115,11 +139,16 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           </div>
         </div>
 
+        {/* Rewards banner (guarded) */}
+        <BannerSlot />
+
+        {/* Page content */}
         <main className="mx-auto max-w-screen-sm px-4">
           {children}
           <div className="h-20" />
         </main>
 
+        {/* Bottom tabs */}
         <nav className="fixed bottom-0 left-0 right-0 z-40 bg-[color:rgb(26_35_48_/_0.85)] backdrop-blur border-t border-white/10">
           <div className="mx-auto max-w-screen-sm px-3 pb-[calc(env(safe-area-inset-bottom)+8px)]">
             <div className="flex items-center">
