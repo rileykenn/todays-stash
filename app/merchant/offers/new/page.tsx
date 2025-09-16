@@ -14,7 +14,7 @@ type Offer = {
   today_used: number | null;
   active: boolean | null;
   photo_url: string | null;
-  savings_amount: number | null; // NEW
+  savings_amount: number | null;
 };
 
 type Merchant = {
@@ -32,15 +32,19 @@ export default function NewOfferPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // form state
+  // form state (strings to avoid cursor jump)
   const [title, setTitle] = useState('');
   const [terms, setTerms] = useState('');
-  const [cap, setCap] = useState<number>(10);
+  const [capInput, setCapInput] = useState('');        // string, normalize on blur
+  const [savingsInput, setSavingsInput] = useState(''); // string, normalize on blur
   const [active, setActive] = useState<boolean>(true);
-  const [savingsAmount, setSavingsAmount] = useState<number>(0); // AUD
 
   const [useBizPhoto, setUseBizPhoto] = useState<boolean>(true);
   const [file, setFile] = useState<File | null>(null);
+
+  // validation state
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   // Preview image
   const previewUrl = useMemo(() => {
@@ -78,30 +82,59 @@ export default function NewOfferPage() {
     return () => { mounted = false; };
   }, [router]);
 
-  // Parse “A$ 12.34” style inputs safely → number >= 0 with 2dp
-  function parseAud(input: string): number {
-    const cleaned = input.replace(/[^\d.]/g, '');
-    const parts = cleaned.split('.');
-    const normalized = parts.length > 1 ? `${parts[0]}.${parts[1].slice(0, 2)}` : parts[0];
-    const n = Number(normalized);
-    return Number.isFinite(n) && n >= 0 ? n : 0;
+  // Helpers
+  const moneyPattern = /^\d{0,7}(\.\d{0,2})?$/; // up to millions, 2dp
+  const intPattern = /^\d{0,6}$/;               // up to 6 digits for cap
+
+  function normalizeMoneyStr(s: string) {
+    if (!s) return '';
+    // trim leading zeros like "000.50" -> "0.50"
+    const n = Number(s);
+    if (!Number.isFinite(n)) return '';
+    return n.toFixed(2);
   }
 
+  function validateAll() {
+    const errs: Record<string, string> = {};
+    if (!title.trim()) errs.title = 'Title is required.';
+    if (!terms.trim()) errs.terms = 'Terms are required.';
+    if (!capInput || !intPattern.test(capInput) || Number(capInput) <= 0) {
+      errs.cap = 'Enter a positive whole number.';
+    }
+    if (!savingsInput || !moneyPattern.test(savingsInput) || Number(savingsInput) <= 0) {
+      errs.savings = 'Enter a positive amount (max 2 decimals).';
+    }
+    setFieldErrors(errs);
+    return errs;
+  }
+
+  const isFormValid = () => Object.keys(validateAll()).length === 0;
+
   async function createOffer() {
+    const errs = validateAll();
+    if (Object.keys(errs).length > 0) {
+      // mark all as touched to show messages
+      setTouched({ title: true, terms: true, cap: true, savings: true });
+      return;
+    }
+
     if (!merchant) return;
     setSaving(true);
     setError(null);
 
     try {
+      const per_day_cap = Number(capInput);
+      const savings_amount = Math.round(Number(savingsInput) * 100) / 100;
+
       // 1) create row first to get id
       const insertPayload: Partial<Offer> = {
         merchant_id: merchant.id,
         title: title.trim(),
-        terms: terms.trim() || null,
-        per_day_cap: Number.isFinite(cap) ? cap : null,
+        terms: terms.trim(),
+        per_day_cap,
         active,
         today_used: 0,
-        savings_amount: Math.round(parseAud(String(savingsAmount)) * 100) / 100, // 2dp
+        savings_amount,
         photo_url: useBizPhoto ? (merchant.photo_url ?? null) : null,
       };
 
@@ -178,7 +211,7 @@ export default function NewOfferPage() {
               <p className="text-xs text-white/60 mt-0.5">{merchant?.name || 'Your business'}</p>
               {terms && <p className="text-xs text-white/60 mt-1">{terms}</p>}
               <div className="mt-3 text-xs text-white/60 flex items-center justify-between">
-                <span>Cap: {Number.isFinite(cap) ? cap : '—'}</span>
+                <span>Cap: {capInput || '—'}</span>
                 <span>Used today: 0</span>
               </div>
             </div>
@@ -193,9 +226,14 @@ export default function NewOfferPage() {
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, title: true }))}
             placeholder="e.g., 2-for-1 Coffee 3–5pm"
-            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.title && fieldErrors.title ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
           />
+          {touched.title && fieldErrors.title && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.title}</p>
+          )}
         </div>
 
         <div>
@@ -203,22 +241,41 @@ export default function NewOfferPage() {
           <textarea
             value={terms}
             onChange={(e) => setTerms(e.target.value)}
+            onBlur={() => setTouched((t) => ({ ...t, terms: true }))}
             placeholder="Weekdays only, dine-in, etc."
             rows={3}
-            className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+            className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none
+              ${touched.terms && fieldErrors.terms ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
           />
+          {touched.terms && fieldErrors.terms && (
+            <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.terms}</p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-white/60 mb-1">Per-day cap</label>
             <input
-              type="number"
-              min={0}
-              value={cap}
-              onChange={(e) => setCap(parseInt(e.target.value || '0', 10))}
-              className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-[var(--color-brand-600)]"
+              inputMode="numeric"
+              pattern="\d*"
+              value={capInput}
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === '' || intPattern.test(v)) setCapInput(v);
+              }}
+              onBlur={() => {
+                setTouched((t) => ({ ...t, cap: true }));
+                if (capInput === '') return;
+                // strip leading zeros
+                const n = Number(capInput);
+                setCapInput(Number.isFinite(n) ? String(Math.max(0, Math.trunc(n))) : '');
+              }}
+              className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm focus:outline-none
+                ${touched.cap && fieldErrors.cap ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
             />
+            {touched.cap && fieldErrors.cap && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.cap}</p>
+            )}
           </div>
 
           <div>
@@ -227,13 +284,23 @@ export default function NewOfferPage() {
               <span className="px-3 py-2 rounded-xl bg-black/30 border border-white/10 text-sm">A$</span>
               <input
                 inputMode="decimal"
-                value={savingsAmount.toFixed(2)}
-                onChange={(e) => setSavingsAmount(parseAud(e.target.value))}
-                className="w-full bg-black/20 border border-white/10 rounded-xl px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+                value={savingsInput}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  if (v === '' || moneyPattern.test(v)) setSavingsInput(v);
+                }}
+                onBlur={() => {
+                  setTouched((t) => ({ ...t, savings: true }));
+                  setSavingsInput((s) => normalizeMoneyStr(s));
+                }}
+                className={`w-full bg-black/20 border rounded-xl px-3 py-2 text-sm focus:outline-none
+                  ${touched.savings && fieldErrors.savings ? 'border-[color:rgb(248_113_113)]' : 'border-white/10 focus:border-[var(--color-brand-600)]'}`}
                 aria-label="Savings in Australian dollars"
               />
             </div>
-            <p className="mt-1 text-xs text-white/50">How much a customer saves when redeeming this offer (AUD, two decimals).</p>
+            {touched.savings && fieldErrors.savings && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">{fieldErrors.savings}</p>
+            )}
           </div>
         </div>
 
