@@ -1,21 +1,70 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { sb } from '@/lib/supabaseBrowser';
 
 type ApplyStatus = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
 
+declare global {
+  interface Window {
+    google?: typeof google;
+  }
+}
+
+// --- Google loader (no extra packages) ---
+function useLoadGooglePlaces(apiKey?: string) {
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    if (!apiKey) return;
+    if (window.google?.maps?.places) {
+      setReady(true);
+      return;
+    }
+    const id = 'google-places-script';
+    if (document.getElementById(id)) return;
+
+    const s = document.createElement('script');
+    s.id = id;
+    s.async = true;
+    s.defer = true;
+    s.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=places`;
+    s.onload = () => setReady(true);
+    document.head.appendChild(s);
+  }, [apiKey]);
+
+  return ready;
+}
+
 function normalizePhoneAU(input: string) {
   const raw = input.replace(/\s+/g, '');
-  // already E.164
-  if (raw.startsWith('+')) return raw;
-  // AU mobile 04xxxxxxxx -> +614xxxxxxxx
-  if (/^0\d{9}$/.test(raw) || /^04\d{8}$/.test(raw)) return '+61' + raw.slice(1);
-  // Let other +cc formats pass through (we only show AU in UI)
+
+  // fix common mistake: +6104xxxxxxxx -> +614xxxxxxxx
+  if (/^\+6104\d{8}$/.test(raw)) return '+61' + raw.slice(4);
+
+  if (/^\+614\d{8}$/.test(raw)) return raw;    // correct E.164 AU mobile
+  if (/^04\d{8}$/.test(raw)) return '+61' + raw.slice(1);
+  if (/^0\d{9}$/.test(raw)) return '+61' + raw.slice(1);
   return raw;
 }
 
 export default function MerchantApplyPage() {
+  const GOOGLE_KEY = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+  const placesReady = useLoadGooglePlaces(GOOGLE_KEY);
+
+  // Google Places services/refs
+  const sessionTokenRef = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
+  const autoSvcRef = useRef<google.maps.places.AutocompleteService | null>(null);
+  const placesSvcRef = useRef<google.maps.places.PlacesService | null>(null);
+
+  useEffect(() => {
+    if (!placesReady || !window.google) return;
+    sessionTokenRef.current = new window.google.maps.places.AutocompleteSessionToken();
+    autoSvcRef.current = new window.google.maps.places.AutocompleteService();
+    // PlacesService needs a DOM node; we can pass a detached div
+    placesSvcRef.current = new window.google.maps.places.PlacesService(document.createElement('div'));
+  }, [placesReady]);
+
   // Form fields
   const [fullName, setFullName] = useState('');
   const [businessName, setBusinessName] = useState('');
@@ -24,6 +73,13 @@ export default function MerchantApplyPage() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+
+  // Address autocomplete
+  const [address, setAddress] = useState('');
+  const [addressPreds, setAddressPreds] = useState<google.maps.places.AutocompletePrediction[]>([]);
+  const [showPreds, setShowPreds] = useState(false);
+  const [placeId, setPlaceId] = useState<string | null>(null);
+  const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   // Phone code flow
   const [code, setCode] = useState('');
@@ -45,6 +101,7 @@ export default function MerchantApplyPage() {
       fullName.trim() &&
       businessName.trim() &&
       abn.trim() &&
+      address.trim() &&
       phone.trim() &&
       email.trim() &&
       password.length >= 6 &&
@@ -52,11 +109,56 @@ export default function MerchantApplyPage() {
       phoneVerified &&
       !loading
     );
-  }, [fullName, businessName, abn, phone, email, password, confirm, phoneVerified, loading]);
+  }, [fullName, businessName, abn, address, phone, email, password, confirm, phoneVerified, loading]);
 
   function resetAlerts() {
     setErr(null);
     setOk(null);
+  }
+
+  // --- Address typing + debounce to get predictions ---
+  useEffect(() => {
+    if (!placesReady || !autoSvcRef.current) return;
+    if (!address || !showPreds) {
+      setAddressPreds([]);
+      return;
+    }
+    const handle = setTimeout(() => {
+      autoSvcRef.current!.getPlacePredictions(
+        {
+          input: address,
+          sessionToken: sessionTokenRef.current ?? undefined,
+          componentRestrictions: { country: ['au'] }, // AU focus for MVP
+          types: ['establishment', 'geocode'],
+        },
+        (preds) => setAddressPreds(preds ?? [])
+      );
+    }, 200); // small debounce
+    return () => clearTimeout(handle);
+  }, [address, showPreds, placesReady]);
+
+  // --- Select a prediction: fetch details to lock in formatted address + coords ---
+  function selectPrediction(p: google.maps.places.AutocompletePrediction) {
+    if (!placesSvcRef.current) return;
+    setShowPreds(false);
+    setAddress(p.description);
+    setPlaceId(p.place_id || null);
+
+    placesSvcRef.current.getDetails(
+      {
+        placeId: p.place_id!,
+        sessionToken: sessionTokenRef.current ?? undefined,
+        fields: ['formatted_address', 'geometry', 'place_id'],
+      },
+      (place, status) => {
+        if (status !== google.maps.places.PlacesServiceStatus.OK || !place) return;
+        const formatted = place.formatted_address ?? p.description;
+        setAddress(formatted);
+        setPlaceId(place.place_id ?? p.place_id ?? null);
+        const loc = place.geometry?.location;
+        if (loc) setCoords({ lat: loc.lat(), lng: loc.lng() });
+      }
+    );
   }
 
   async function handleGetCode() {
@@ -64,12 +166,11 @@ export default function MerchantApplyPage() {
     if (!canRequestCode) return;
 
     const normalized = normalizePhoneAU(phone.trim());
-    setPhone(normalized); // reflect normalization in the UI
+    setPhone(normalized);
     setCode('');
     setCodeSent('sending_code');
 
     try {
-      // IMPORTANT: allow Supabase to create a temporary phone user for OTP
       const { error } = await sb.auth.signInWithOtp({
         phone: normalized,
         options: { channel: 'sms', shouldCreateUser: true },
@@ -79,7 +180,7 @@ export default function MerchantApplyPage() {
     } catch (e: any) {
       setErr(
         e?.message ??
-          'Failed to send code. Check phone format (e.g., +614XXXXXXXX) and that SMS is configured.'
+          'Failed to send code. Check phone format (e.g., +614XXXXXXXX) and Twilio configuration.'
       );
       setCodeSent('idle');
     }
@@ -98,13 +199,7 @@ export default function MerchantApplyPage() {
         type: 'sms',
       });
       if (error) throw error;
-
-      // We only use phone OTP to prove control of the number.
-      // Drop the phone session immediately so it won't clobber the main email/pw session.
-      if (data?.session) {
-        await sb.auth.signOut();
-      }
-
+      if (data?.session) await sb.auth.signOut(); // drop temp phone session
       setPhoneVerified(true);
       setCodeSent('verified');
     } catch (e: any) {
@@ -163,7 +258,8 @@ export default function MerchantApplyPage() {
 
       const userId = session?.user?.id ?? null;
 
-      const ins = await sb.from('merchant_applications').insert({
+      // Try inserting with address_text; if the column doesn't exist, retry without it.
+      const payload: any = {
         user_id: userId,
         contact_name: fullName.trim(),
         business_name: businessName.trim(),
@@ -171,7 +267,23 @@ export default function MerchantApplyPage() {
         phone: normalizePhoneAU(phone.trim()),
         email: email.trim(),
         status: 'pending',
-      });
+      };
+      if (address) payload.address_text = address;
+      if (placeId) payload.address_place_id = placeId;
+      if (coords) {
+        payload.address_lat = coords.lat;
+        payload.address_lng = coords.lng;
+      }
+
+      let ins = await sb.from('merchant_applications').insert(payload);
+      if (ins.error && String(ins.error.code) === '42703') {
+        // undefined_column — fall back to legacy insert without address fields
+        delete payload.address_text;
+        delete payload.address_place_id;
+        delete payload.address_lat;
+        delete payload.address_lng;
+        ins = await sb.from('merchant_applications').insert(payload);
+      }
       if (ins.error) throw ins.error;
 
       setOk(
@@ -226,6 +338,44 @@ export default function MerchantApplyPage() {
             placeholder="11 111 111 111"
             className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
           />
+        </div>
+
+        {/* Address (Google Places Autocomplete) */}
+        <div className="relative">
+          <label className="block text-xs text-white/60 mb-1">Business address</label>
+          <input
+            required
+            value={address}
+            onChange={(e) => { setAddress(e.target.value); setShowPreds(true); }}
+            onFocus={() => setShowPreds(true)}
+            onBlur={() => setTimeout(() => setShowPreds(false), 150)} // allow click
+            placeholder="Start typing your address…"
+            disabled={!placesReady}
+            className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)] disabled:opacity-60"
+          />
+
+          {showPreds && addressPreds.length > 0 && (
+            <div className="absolute z-20 mt-1 w-full overflow-hidden rounded-xl border border-white/10 bg-[rgb(24_32_45)] shadow-lg">
+              <ul className="max-h-72 overflow-auto divide-y divide-white/10">
+                {addressPreds.map((p) => (
+                  <li key={p.place_id}>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.preventDefault()} // keep focus during click
+                      onClick={() => selectPrediction(p)}
+                      className="w-full text-left px-3 py-2 hover:bg-white/5"
+                    >
+                      <div className="text-sm">{p.structured_formatting.main_text}</div>
+                      <div className="text-xs text-white/60">{p.structured_formatting.secondary_text}</div>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!placesReady && (
+            <p className="mt-1 text-xs text-white/50">Loading address suggestions…</p>
+          )}
         </div>
 
         {/* Phone with Get Code + Code field */}
@@ -341,7 +491,6 @@ export default function MerchantApplyPage() {
 
         <p className="text-xs text-white/50">
           By submitting, you agree that we may contact you to verify your business details.
-          Notifications are coming soon.
         </p>
       </form>
 
