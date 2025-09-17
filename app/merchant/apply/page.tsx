@@ -5,6 +5,13 @@ import { sb } from '@/lib/supabaseBrowser';
 
 type ApplyStatus = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
 
+function normalizePhoneAU(input: string) {
+  const raw = input.replace(/\s+/g, '');
+  if (raw.startsWith('+')) return raw;               // already E.164
+  if (/^0\d{8,}$/.test(raw)) return '+61' + raw.slice(1); // 04xx… -> +61 4xx…
+  return raw; // let Supabase validate other countries if user typed +cc
+}
+
 export default function MerchantApplyPage() {
   // Form fields
   const [fullName, setFullName] = useState('');
@@ -19,14 +26,17 @@ export default function MerchantApplyPage() {
   const [code, setCode] = useState('');
   const [codeSent, setCodeSent] = useState<ApplyStatus>('idle');
   const [phoneVerified, setPhoneVerified] = useState(false);
-  const [devCode, setDevCode] = useState<string | null>(null); // fallback if SMS not configured
 
   // UX state
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ok, setOk] = useState<string | null>(null);
 
-  const canRequestCode = useMemo(() => phone.trim().length >= 8 && !phoneVerified, [phone, phoneVerified]);
+  const canRequestCode = useMemo(
+    () => phone.trim().length >= 8 && !phoneVerified,
+    [phone, phoneVerified]
+  );
+
   const canSubmit = useMemo(() => {
     return (
       fullName.trim() &&
@@ -49,56 +59,48 @@ export default function MerchantApplyPage() {
   async function handleGetCode() {
     resetAlerts();
     if (!canRequestCode) return;
+
+    const normalized = normalizePhoneAU(phone.trim());
+    setPhone(normalized); // reflect normalization in the UI
     setCode('');
-    setDevCode(null);
     setCodeSent('sending_code');
+
     try {
-      // Try real SMS via Supabase (requires SMS provider configured in Supabase Auth)
       const { error } = await sb.auth.signInWithOtp({
-        phone: phone.trim(),
+        phone: normalized,
         options: { channel: 'sms', shouldCreateUser: false },
       });
       if (error) throw error;
       setCodeSent('code_sent');
     } catch (e: any) {
-      // Fallback dev flow: generate a one-time code locally so you can test the UI now
-      const temp = String(Math.floor(100000 + Math.random() * 900000));
-      setDevCode(temp);
-      setCodeSent('code_sent');
+      setErr(
+        e?.message ??
+          'Failed to send code. Double-check the phone format (e.g., +614XXXXXXXX) and that SMS is configured.'
+      );
+      setCodeSent('idle');
     }
   }
 
   async function handleVerifyCode() {
     resetAlerts();
     if (!code || code.length < 4) return;
+    const normalized = normalizePhoneAU(phone.trim());
+
     setCodeSent('verifying');
     try {
-      if (devCode) {
-        // Dev fallback: compare entered code to generated one
-        if (code === devCode) {
-          setPhoneVerified(true);
-          setCodeSent('verified');
-          setDevCode(null);
-        } else {
-          throw new Error('Incorrect code. Please try again.');
-        }
-      } else {
-        // Real Supabase verify
-        const { data, error } = await sb.auth.verifyOtp({
-          phone: phone.trim(),
-          token: code.trim(),
-          type: 'sms',
-        });
-        if (error) throw error;
-        // A phone OTP verification may create a session for the phone identity.
-        // We only use this to confirm ownership of the number for the application flow.
-        // Immediately sign out that session if it appears, to avoid clobbering the current user session.
-        if (data?.session) {
-          await sb.auth.signOut();
-        }
-        setPhoneVerified(true);
-        setCodeSent('verified');
-      }
+      const { data, error } = await sb.auth.verifyOtp({
+        phone: normalized,
+        token: code.trim(),
+        type: 'sms',
+      });
+      if (error) throw error;
+
+      // If Supabase creates a session for the phone identity, sign it out immediately;
+      // we only use this step to confirm ownership of the number.
+      if (data?.session) await sb.auth.signOut();
+
+      setPhoneVerified(true);
+      setCodeSent('verified');
     } catch (e: any) {
       setErr(e?.message ?? 'Failed to verify code.');
       setCodeSent('code_sent');
@@ -126,10 +128,8 @@ export default function MerchantApplyPage() {
       } = await sb.auth.getSession();
 
       if (!session) {
-        // Try sign-in
         const si = await sb.auth.signInWithPassword({ email: email.trim(), password });
         if (si.error) {
-          // If invalid creds → attempt sign-up
           const invalid =
             si.error.message?.toLowerCase().includes('invalid') ||
             si.error.message?.toLowerCase().includes('credentials');
@@ -139,13 +139,13 @@ export default function MerchantApplyPage() {
               password,
               options: {
                 data: { full_name: fullName, role: 'merchant_applicant' },
-                emailRedirectTo: typeof window !== 'undefined' ? `${window.location.origin}/merchant` : undefined,
+                emailRedirectTo:
+                  typeof window !== 'undefined'
+                    ? `${window.location.origin}/merchant`
+                    : undefined,
               },
             });
             if (su.error) throw su.error;
-
-            // If your project requires email confirmation, session may be null here.
-            // We’ll fetch again but still allow submitting the application for review.
             const g = await sb.auth.getSession();
             session = g.data.session;
           } else {
@@ -157,19 +157,21 @@ export default function MerchantApplyPage() {
       }
 
       const userId = session?.user?.id ?? null;
-      // Insert the application row (even if user must confirm email later)
+
       const ins = await sb.from('merchant_applications').insert({
-        user_id: userId, // may be null for pending email-confirm projects; acceptable for MVP if table allows
+        user_id: userId,
         contact_name: fullName.trim(),
         business_name: businessName.trim(),
         abn: abn.trim(),
-        phone: phone.trim(),
+        phone: normalizePhoneAU(phone.trim()),
         email: email.trim(),
         status: 'pending',
       });
       if (ins.error) throw ins.error;
 
-      setOk("Thank you for submitting your application. Please wait while our friendly team review and approve your application.");
+      setOk(
+        'Thank you for submitting your application. Please wait while our friendly team review and approve your application.'
+      );
     } catch (e: any) {
       setErr(e?.message ?? 'Something went wrong. Please try again.');
     } finally {
@@ -241,6 +243,7 @@ export default function MerchantApplyPage() {
               {codeSent === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
             </button>
           </div>
+
           {codeSent !== 'idle' && !phoneVerified && (
             <div className="mt-2 flex gap-2">
               <input
@@ -260,10 +263,10 @@ export default function MerchantApplyPage() {
               </button>
             </div>
           )}
-          {devCode && !phoneVerified && (
-            <p className="mt-1 text-xs text-white/50">Dev mode: your code is <span className="font-mono">{devCode}</span></p>
+
+          {phoneVerified && (
+            <p className="mt-1 text-xs text-[color:rgb(16_185_129)]">Phone number verified.</p>
           )}
-          {phoneVerified && <p className="mt-1 text-xs text-[color:rgb(16_185_129)]">Phone number verified.</p>}
         </div>
 
         {/* Email */}
