@@ -7,9 +7,12 @@ type ApplyStatus = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verifi
 
 function normalizePhoneAU(input: string) {
   const raw = input.replace(/\s+/g, '');
-  if (raw.startsWith('+')) return raw;               // already E.164
-  if (/^0\d{8,}$/.test(raw)) return '+61' + raw.slice(1); // 04xx… -> +61 4xx…
-  return raw; // let Supabase validate other countries if user typed +cc
+  // already E.164
+  if (raw.startsWith('+')) return raw;
+  // AU mobile 04xxxxxxxx -> +614xxxxxxxx
+  if (/^0\d{9}$/.test(raw) || /^04\d{8}$/.test(raw)) return '+61' + raw.slice(1);
+  // Let other +cc formats pass through (we only show AU in UI)
+  return raw;
 }
 
 export default function MerchantApplyPage() {
@@ -33,8 +36,8 @@ export default function MerchantApplyPage() {
   const [ok, setOk] = useState<string | null>(null);
 
   const canRequestCode = useMemo(
-    () => phone.trim().length >= 8 && !phoneVerified,
-    [phone, phoneVerified]
+    () => phone.trim().length >= 8 && !phoneVerified && codeSent !== 'sending_code',
+    [phone, phoneVerified, codeSent]
   );
 
   const canSubmit = useMemo(() => {
@@ -66,16 +69,17 @@ export default function MerchantApplyPage() {
     setCodeSent('sending_code');
 
     try {
+      // IMPORTANT: allow Supabase to create a temporary phone user for OTP
       const { error } = await sb.auth.signInWithOtp({
         phone: normalized,
-        options: { channel: 'sms', shouldCreateUser: false },
+        options: { channel: 'sms', shouldCreateUser: true },
       });
       if (error) throw error;
       setCodeSent('code_sent');
     } catch (e: any) {
       setErr(
         e?.message ??
-          'Failed to send code. Double-check the phone format (e.g., +614XXXXXXXX) and that SMS is configured.'
+          'Failed to send code. Check phone format (e.g., +614XXXXXXXX) and that SMS is configured.'
       );
       setCodeSent('idle');
     }
@@ -95,9 +99,11 @@ export default function MerchantApplyPage() {
       });
       if (error) throw error;
 
-      // If Supabase creates a session for the phone identity, sign it out immediately;
-      // we only use this step to confirm ownership of the number.
-      if (data?.session) await sb.auth.signOut();
+      // We only use phone OTP to prove control of the number.
+      // Drop the phone session immediately so it won't clobber the main email/pw session.
+      if (data?.session) {
+        await sb.auth.signOut();
+      }
 
       setPhoneVerified(true);
       setCodeSent('verified');
@@ -130,9 +136,8 @@ export default function MerchantApplyPage() {
       if (!session) {
         const si = await sb.auth.signInWithPassword({ email: email.trim(), password });
         if (si.error) {
-          const invalid =
-            si.error.message?.toLowerCase().includes('invalid') ||
-            si.error.message?.toLowerCase().includes('credentials');
+          const msg = si.error.message?.toLowerCase() ?? '';
+          const invalid = msg.includes('invalid') || msg.includes('credentials');
           if (invalid) {
             const su = await sb.auth.signUp({
               email: email.trim(),
@@ -170,7 +175,7 @@ export default function MerchantApplyPage() {
       if (ins.error) throw ins.error;
 
       setOk(
-        'Thank you for submitting your application. Please wait while our friendly team review and approve your application.'
+        'Thank you for submitting your application. Our team will review and enable your merchant dashboard.'
       );
     } catch (e: any) {
       setErr(e?.message ?? 'Something went wrong. Please try again.');
@@ -237,7 +242,7 @@ export default function MerchantApplyPage() {
             <button
               type="button"
               onClick={handleGetCode}
-              disabled={!canRequestCode || codeSent === 'sending_code'}
+              disabled={!canRequestCode}
               className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
             >
               {codeSent === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
