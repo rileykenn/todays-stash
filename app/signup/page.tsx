@@ -16,7 +16,7 @@ function normalizePhoneAU(input: string) {
 type OtpState = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
 
 export default function SignupPage() {
-  // if already logged in, bounce to /consumer (hard nav to refresh chips)
+  // bounce if already logged in
   useEffect(() => {
     (async () => {
       const { data } = await sb.auth.getSession();
@@ -39,8 +39,6 @@ export default function SignupPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  function resetAlerts() { setError(null); setNotice(null); }
-
   const canRequestCode = useMemo(
     () => phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
     [phone, phoneVerified, otpState]
@@ -56,6 +54,8 @@ export default function SignupPage() {
       !loading
     );
   }, [email, phone, password, confirm, phoneVerified, loading]);
+
+  function resetAlerts() { setError(null); setNotice(null); }
 
   async function handleSendCode() {
     resetAlerts();
@@ -116,47 +116,47 @@ export default function SignupPage() {
 
     setLoading(true);
     try {
-      // 1) Try sign-in first (keeps existing behavior and immediate session)
+      // 1) Try sign-in first
       const si = await sb.auth.signInWithPassword({ email: email.trim(), password });
       if (!si.error && si.data?.session) {
-        window.location.replace('/consumer'); // hard nav so layout effects rerun
+        window.location.replace('/consumer');
         return;
       }
 
       // 2) If invalid creds → create the account
-      const msg = si.error?.message?.toLowerCase() ?? '';
-      const invalid = msg.includes('invalid') || msg.includes('credentials') || msg.includes('not found');
+      const msg1 = si.error?.message?.toLowerCase() ?? '';
+      const invalid =
+        msg1.includes('invalid') || msg1.includes('credentials') || msg1.includes('not found');
+
       if (invalid) {
         const su = await sb.auth.signUp({
           email: email.trim(),
           password,
           options: {
             data: { role: 'consumer', phone_e164: normalizePhoneAU(phone.trim()) },
-            emailRedirectTo:
-              typeof window !== 'undefined' ? `${window.location.origin}/consumer` : undefined,
+            // no emailRedirectTo needed when confirm email is OFF
           },
         });
         if (su.error) throw su.error;
 
-        // 3) Try immediate sign-in (works when "Confirm email" is OFF)
+        // 3) Immediately sign in (since confirm email is OFF)
         const si2 = await sb.auth.signInWithPassword({ email: email.trim(), password });
         if (!si2.error && si2.data?.session) {
           window.location.replace('/consumer');
           return;
         }
 
-        // 4) If we still can't sign in, it's because "Confirm email" is ON
-        setNotice('Check your email to confirm your account, then come back and sign in.');
-        return;
+        // 4) If the second sign-in still says "confirm", THEN show the notice
+        const msg2 = si2.error?.message?.toLowerCase() ?? '';
+        if (msg2.includes('confirm')) {
+          setNotice('Please confirm your email first. We just sent you a link.');
+          return;
+        }
+
+        if (si2.error) throw si2.error;
       }
 
-      // 5) Other errors (e.g., needs confirmation)
-      const needsConfirm = msg.includes('confirm');
-      if (needsConfirm) {
-        setNotice('Please confirm your email first. We just sent you a link.');
-        return;
-      }
-
+      // If it wasn't invalid and wasn't success, surface the real error
       if (si.error) throw si.error;
     } catch (e: any) {
       setError(e?.message ?? 'Something went wrong. Please try again.');
@@ -217,7 +217,7 @@ export default function SignupPage() {
                 type="button"
                 onClick={handleSendCode}
                 disabled={!canRequestCode}
-                className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg.white/15 disabled:opacity-60"
+                className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
               >
                 {otpState === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
               </button>
@@ -291,7 +291,7 @@ export default function SignupPage() {
             </div>
           )}
 
-          {/* Sign up only (keeps you signed in when possible) */}
+          {/* Sign up */}
           <button
             disabled={!canSubmit}
             type="submit"
