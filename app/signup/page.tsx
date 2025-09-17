@@ -1,188 +1,297 @@
 'use client';
 
-import { useState } from 'react';
-import Link from 'next/link';
-import { useRouter } from 'next/navigation';
+import { useEffect, useMemo, useState } from 'react';
 import { sb } from '@/lib/supabaseBrowser';
 
+function normalizePhoneAU(input: string) {
+  const raw = input.replace(/\s+/g, '');
+  if (/^\+6104\d{8}$/.test(raw)) return '+61' + raw.slice(4); // fix +6104xxxx
+  if (/^\+614\d{8}$/.test(raw)) return raw;                    // correct E.164
+  if (/^04\d{8}$/.test(raw)) return '+61' + raw.slice(1);      // 04xxxxxxxx
+  if (/^0\d{9}$/.test(raw)) return '+61' + raw.slice(1);       // 0XXXXXXXXX
+  return raw;
+}
+
+type OtpState = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
+
 export default function SignupPage() {
-  const router = useRouter();
+  // redirect away if already authed
+  useEffect(() => {
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      if (data.session && typeof window !== 'undefined') {
+        window.location.replace('/consumer'); // hard nav per conventions
+      }
+    })();
+  }, []);
+
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+
+  const [otpState, setOtpState] = useState<OtpState>('idle');
+  const [phoneVerified, setPhoneVerified] = useState(false);
 
   const [loading, setLoading] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
 
-  async function handleEmailAuth(e: React.FormEvent) {
-    e.preventDefault();
-    setLoading(true);
-    setError(null);
-    setNotice(null);
+  function resetErr() { setErr(null); }
+
+  const canRequestCode = useMemo(
+    () => phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
+    [phone, phoneVerified, otpState]
+  );
+
+  const canSubmit = useMemo(() => {
+    return (
+      email.trim() &&
+      phone.trim() &&
+      password.length >= 6 &&
+      password === confirm &&
+      phoneVerified &&
+      !loading
+    );
+  }, [email, phone, password, confirm, phoneVerified, loading]);
+
+  async function handleSendCode() {
+    resetErr();
+    if (!canRequestCode) return;
+
+    const normalized = normalizePhoneAU(phone.trim());
+    setPhone(normalized);
+    setCode('');
+    setOtpState('sending_code');
 
     try {
-      // 1. Try sign-in first
-      const { data: signInData, error: signInErr } = await sb.auth.signInWithPassword({
+      // Allow temporary phone identity so trial/test works
+      const { error } = await sb.auth.signInWithOtp({
+        phone: normalized,
+        options: { channel: 'sms', shouldCreateUser: true },
+      });
+      if (error) throw error;
+      setOtpState('code_sent');
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
+      setOtpState('idle');
+    }
+  }
+
+  async function handleVerify() {
+    resetErr();
+    if (!code || code.length < 4) return;
+
+    const normalized = normalizePhoneAU(phone.trim());
+    setOtpState('verifying');
+    try {
+      const { data, error } = await sb.auth.verifyOtp({
+        phone: normalized,
+        token: code.trim(),
+        type: 'sms',
+      });
+      if (error) throw error;
+
+      // Drop the temporary phone session — we sign up with email/pw next.
+      if (data?.session) await sb.auth.signOut();
+
+      setPhoneVerified(true);
+      setOtpState('verified');
+    } catch (e: any) {
+      setErr(e?.message ?? 'Failed to verify code.');
+      setOtpState('code_sent');
+    }
+  }
+
+  async function submit(e: React.FormEvent) {
+    e.preventDefault();
+    resetErr();
+
+    if (password !== confirm) {
+      setErr('Passwords do not match.');
+      return;
+    }
+    if (!phoneVerified) {
+      setErr('Please verify your phone number first.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Pure sign-up flow (no sign-in-first). Confirmation email enabled per project settings.
+      const { error } = await sb.auth.signUp({
         email: email.trim(),
         password,
+        options: {
+          // Store the normalized phone as part of user metadata if you want
+          data: { role: 'consumer', phone_e164: normalizePhoneAU(phone.trim()) },
+          emailRedirectTo:
+            typeof window !== 'undefined'
+              ? `${window.location.origin}/consumer`
+              : undefined,
+        },
       });
+      if (error) throw error;
 
-      if (!signInErr && signInData?.session) {
-        // success → redirect + reload
-        window.location.replace('/consumer');
-        return;
-      }
-
-      // 2. Handle invalid credentials → sign-up
-      const invalidCreds =
-        signInErr?.message?.toLowerCase().includes('invalid') ||
-        signInErr?.message?.toLowerCase().includes('credentials');
-
-      if (invalidCreds) {
-        const { error: upErr } = await sb.auth.signUp({
-          email: email.trim(),
-          password,
-          options: {
-            emailRedirectTo:
-              typeof window !== 'undefined' ? `${window.location.origin}/consumer` : undefined,
-          },
-        });
-        if (upErr) throw upErr;
-
-        setNotice('Check your email for the confirmation link to finish creating your account.');
-        return;
-      }
-
-      // 3. Handle not confirmed yet
-      const needsConfirm =
-        signInErr?.message?.toLowerCase().includes('confirm') ||
-        signInErr?.message?.toLowerCase().includes('not confirmed');
-
-      if (needsConfirm) {
-        setNotice('Please confirm your email to finish signing in. We just sent you a link.');
-        return;
-      }
-
-      if (signInErr) throw signInErr;
-    } catch (err: any) {
-      setError(err?.message ?? 'Something went wrong.');
+      // Hard redirect to /consumer so chips/layout refresh on next load.
+      if (typeof window !== 'undefined') window.location.replace('/consumer');
+    } catch (e: any) {
+      setErr(e?.message ?? 'Could not sign up. Please try again.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleGoogle() {
-    setLoading(true);
-    setError(null);
-    setNotice(null);
+  async function continueWithGoogle() {
+    resetErr();
     try {
-      const redirectTo =
-        typeof window !== 'undefined' ? `${window.location.origin}/consumer` : undefined;
-
-      const { error: oauthErr } = await sb.auth.signInWithOAuth({
+      const origin =
+        typeof window !== 'undefined' ? window.location.origin : 'https://todays-stash.vercel.app';
+      const { error } = await sb.auth.signInWithOAuth({
         provider: 'google',
-        options: { redirectTo },
+        options: { redirectTo: `${origin}/consumer` },
       });
-      if (oauthErr) throw oauthErr;
-      // Supabase redirects to Google → back to /consumer on success.
-    } catch (err: any) {
-      setError(err?.message ?? 'Google sign-in failed.');
-      setLoading(false);
+      if (error) throw error;
+    } catch (e: any) {
+      setErr(e?.message ?? 'Google sign-in failed.');
     }
   }
 
   return (
     <main className="mx-auto max-w-screen-sm px-4 py-8 text-white">
-      <h1 className="text-3xl font-bold tracking-tight">Create your account</h1>
-      <p className="mt-2 text-white/70 text-sm">
+      <h1 className="text-2xl font-extrabold mb-2">Create your account</h1>
+      <p className="text-white/70 text-sm mb-6">
         You can browse deals without an account. You’ll sign in when you redeem.
       </p>
 
-      {/* Auth card */}
-      <section className="mt-6 rounded-2xl bg-[rgb(24_32_45)] border border-white/10 p-5">
-        <form onSubmit={handleEmailAuth} className="space-y-4">
-          <div>
-            <label className="block text-xs text-white/60 mb-1">Email address</label>
+      <form onSubmit={submit} className="rounded-2xl bg-[rgb(24_32_45)] border border-white/10 p-5 space-y-4">
+        {/* Email */}
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Email address</label>
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="you@example.com"
+            className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+          />
+        </div>
+
+        {/* Phone + OTP (borrowed behavior from merchant/apply) */}
+        <div>
+          <label className="block text-xs text-white/60 mb-1">Mobile phone</label>
+          <div className="flex gap-2">
             <input
-              type="email"
               required
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-              className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="+61…"
+              className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
             />
+            <button
+              type="button"
+              onClick={handleSendCode}
+              disabled={!canRequestCode}
+              className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
+            >
+              {otpState === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
+            </button>
           </div>
 
+          {otpState !== 'idle' && !phoneVerified && (
+            <div className="mt-2 flex gap-2">
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Enter code"
+                inputMode="numeric"
+                className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+              />
+              <button
+                type="button"
+                onClick={handleVerify}
+                disabled={otpState === 'verifying' || !code}
+                className="rounded-xl px-4 py-2 bg-[var(--color-brand-600)] text-sm font-semibold hover:brightness-110 disabled:opacity-60"
+              >
+                {otpState === 'verifying' ? 'Verifying…' : 'Verify'}
+              </button>
+            </div>
+          )}
+
+          {phoneVerified && (
+            <p className="mt-1 text-xs text-[color:rgb(16_185_129)]">Phone number verified.</p>
+          )}
+        </div>
+
+        {/* Password + Confirm */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
           <div>
-            <label className="block text-xs text-white/60 mb-1">Password</label>
+            <label className="block text-xs text-white/60 mb-1">Create a password</label>
             <input
               type="password"
               required
               minLength={6}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••"
+              placeholder="At least 6 characters"
               className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
             />
           </div>
-
-          {error && (
-            <div className="rounded-xl p-3 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)] text-sm">
-              {error}
-            </div>
-          )}
-          {notice && (
-            <div className="rounded-xl p-3 bg-[color:rgb(16_185_129_/_0.18)] border border-[color:rgb(16_185_129_/_0.35)] text-[color:rgb(16_185_129)] text-sm">
-              {notice}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
-          >
-            {loading ? 'Please wait…' : 'Sign up / Sign in'}
-          </button>
-        </form>
-
-        <div className="mt-5 flex items-center gap-3">
-          <div className="h-px flex-1 bg-white/10" />
-          <span className="text-xs text-white/50">or</span>
-          <div className="h-px flex-1 bg-white/10" />
+          <div>
+            <label className="block text-xs text-white/60 mb-1">Confirm password</label>
+            <input
+              type="password"
+              required
+              minLength={6}
+              value={confirm}
+              onChange={(e) => setConfirm(e.target.value)}
+              placeholder="Re-enter password"
+              className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+            />
+            {confirm && password !== confirm && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">Passwords don’t match.</p>
+            )}
+          </div>
         </div>
 
+        {/* Error */}
+        {err && (
+          <div className="rounded-xl p-3 bg-[color:rgb(254_242_242)] text-[color:rgb(153_27_27)] text-sm">
+            {err}
+          </div>
+        )}
+
+        {/* Sign up button (no sign-in) */}
         <button
-          onClick={handleGoogle}
-          disabled={loading}
-          className="mt-5 w-full rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15 disabled:opacity-60"
+          disabled={!canSubmit}
+          type="submit"
+          className="w-full rounded-full bg-[var(--color-brand-600)] py-3 font-semibold hover:brightness-110 disabled:opacity-60"
+        >
+          {loading ? 'Creating account…' : 'Sign up'}
+        </button>
+
+        {/* Divider */}
+        <div className="flex items-center gap-2 text-white/40 my-2">
+          <div className="flex-1 h-px bg-white/10" />
+          <span className="text-xs">or</span>
+          <div className="flex-1 h-px bg-white/10" />
+        </div>
+
+        {/* Google */}
+        <button
+          type="button"
+          onClick={continueWithGoogle}
+          className="w-full rounded-full bg-white/10 border border-white/10 py-3 font-semibold hover:bg-white/15"
         >
           Continue with Google
         </button>
 
-        <p className="mt-4 text-xs text-white/50">
+        <p className="text-xs text-white/60">
           Already have an account?{' '}
-          <Link href="/signin" className="text-[var(--color-brand-600)] hover:underline">
-            Sign in
-          </Link>
+          <a href="/signin" className="text-white underline">Sign in</a>
         </p>
-      </section>
-
-      {/* Merchant CTA */}
-      <section className="mt-8 border-t border-white/10 pt-6">
-        <h2 className="text-base font-semibold mb-1">Are you a business?</h2>
-        <p className="text-sm text-white/70 mb-3">
-          List your business on Today’s Stash and start driving foot traffic.
-        </p>
-        <Link
-          href="/merchant/apply"
-          className="inline-block rounded-full px-5 py-3 bg-[color:rgb(17_24_39)] text-white border border-white/10 hover:bg-white/10"
-        >
-          Sign up as a merchant
-        </Link>
-      </section>
-
-      <div className="h-24" />
+      </form>
     </main>
   );
 }
