@@ -29,6 +29,7 @@ export default function SignupPage() {
   // -------------------- state --------------------
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
+  const [sentToPhone, setSentToPhone] = useState<string | null>(null); // exact phone we sent OTP to
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -117,11 +118,7 @@ export default function SignupPage() {
     });
     if (su.error) {
       const m = su.error.message?.toLowerCase() ?? '';
-      if (m.includes('already') && m.includes('registered')) {
-        // try sign in again
-      } else {
-        throw su.error;
-      }
+      if (!m.includes('already') || !m.includes('registered')) throw su.error;
     }
     const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password: pw });
     if (si2.error) throw si2.error;
@@ -158,7 +155,8 @@ export default function SignupPage() {
       if (updErr) throw updErr;
 
       setOtpState('code_sent');
-      setCooldown(10); // 10s anti-abuse cooldown
+      setCooldown(10);           // 10s anti-abuse cooldown
+      setSentToPhone(normalized); // remember EXACT phone used
       setNotice('We sent a code. Enter it below, then press Sign up.');
     } catch (e: any) {
       setError(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
@@ -174,11 +172,17 @@ export default function SignupPage() {
     if (!canSubmit) return;
 
     const trimmedEmail = email.trim();
-    const normalizedPhone = normalizePhoneAU(phone.trim());
+    const normalizedPhone = sentToPhone ?? normalizePhoneAU(phone.trim());
     const token = code.trim();
 
     setLoading(true);
     try {
+      if (!sentToPhone) {
+        setError('Tap “Get code” first, then enter the code and press Sign up.');
+        setLoading(false);
+        return;
+      }
+
       // safety: make sure we still have an email session
       const { data: sessNow } = await sb.auth.getSession();
       if (!sessNow.session) {
@@ -254,7 +258,7 @@ export default function SignupPage() {
             )}
           </div>
 
-          {/* Phone + OTP (code box always visible; no Verify button) */}
+          {/* Phone + OTP (code box always visible; phone locks after send) */}
           <div>
             <label className="block text-xs text-white/60 mb-1">Mobile phone</label>
             <div className="flex gap-2">
@@ -263,6 +267,7 @@ export default function SignupPage() {
                 value={phone}
                 onChange={(e) => setPhone(e.target.value)}
                 placeholder="+61…"
+                readOnly={otpState === 'code_sent'} // lock after sending code to avoid mismatch
                 className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
               />
               <button
