@@ -43,13 +43,17 @@ export default function SignupPage() {
   const [emailTaken, setEmailTaken] = useState(false);
   const [phoneTaken, setPhoneTaken] = useState(false);
 
-  function resetAlerts() { setError(null); setNotice(null); }
+  function resetAlerts() {
+    setError(null);
+    setNotice(null);
+  }
 
   const canRequestCode = useMemo(
     () => phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
     [phone, phoneVerified, otpState]
   );
 
+  // Allow submit without phone verified; we'll link/send OTP after email auth.
   const canSubmit = useMemo(() => {
     const strongPassword = password.length >= 6 && password === confirm;
     const idsOk = !emailTaken && !phoneTaken;
@@ -57,11 +61,10 @@ export default function SignupPage() {
       email.trim() &&
       phone.trim() &&
       strongPassword &&
-      phoneVerified &&
       idsOk &&
       !loading
     );
-  }, [email, phone, password, confirm, phoneVerified, emailTaken, phoneTaken, loading]);
+  }, [email, phone, password, confirm, emailTaken, phoneTaken, loading]);
 
   // -------- Debounced availability check (email + phone) ----------
   useEffect(() => {
@@ -86,34 +89,45 @@ export default function SignupPage() {
       } catch {
         // ignore; don't block UX on check errors
       }
-    }, 350); // small debounce
-
+    }, 350);
     return () => clearTimeout(handle);
   }, [email, phone]);
 
-  // -------- OTP flow ----------
-  async function handleSendCode() {
-    resetAlerts();
-    if (!canRequestCode) return;
+  // -------- Send OTP by LINKING phone to current user (requires session) ----------
+  async function sendLinkOtp(normalizedPhone: string) {
+    // Make sure we have a session (email/pw just created/signed in)
+    const { data: sess } = await sb.auth.getSession();
+    if (!sess.session) {
+      setError('First press “Sign up” with your email & password. Then request the code.');
+      return false;
+    }
 
-    const normalized = normalizePhoneAU(phone.trim());
-    setPhone(normalized);
-    setCode('');
     setOtpState('sending_code');
-
     try {
-      const { error } = await sb.auth.signInWithOtp({
-        phone: normalized,
-        options: { channel: 'sms', shouldCreateUser: true },
-      });
-      if (error) throw error;
+      const { error: updErr } = await sb.auth.updateUser({ phone: normalizedPhone });
+      if (updErr) throw updErr;
+
       setOtpState('code_sent');
+      setNotice('We sent a code to your phone. Enter it below and press Verify.');
+      return true;
     } catch (e: any) {
       setError(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
       setOtpState('idle');
+      return false;
     }
   }
 
+  // Button next to phone field — optional now, but still supported
+  async function handleSendCode() {
+    resetAlerts();
+    if (!canRequestCode) return;
+    const normalized = normalizePhoneAU(phone.trim());
+    setPhone(normalized);
+    setCode('');
+    await sendLinkOtp(normalized);
+  }
+
+  // -------- Verify OTP (keeps same UID) ----------
   async function handleVerify() {
     resetAlerts();
     if (!code || code.length < 4) return;
@@ -127,26 +141,27 @@ export default function SignupPage() {
         type: 'sms',
       });
       if (error) throw error;
-      if (data?.session) await sb.auth.signOut(); // drop temp phone session
+
       setPhoneVerified(true);
       setOtpState('verified');
+
+      // Redirect now that phone is verified (single account linked)
+      if (typeof window !== 'undefined') {
+        window.location.replace('/consumer');
+      }
     } catch (e: any) {
       setError(e?.message ?? 'Failed to verify code.');
       setOtpState('code_sent');
     }
   }
 
-  // -------- Submit (sign-in → sign-up → sign-in) ----------
+  // -------- Submit: email sign-in → sign-up if needed → ensure session → send OTP to link phone ----------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
 
     if (password !== confirm) {
       setError('Passwords do not match.');
-      return;
-    }
-    if (!phoneVerified) {
-      setError('Please verify your phone number first.');
       return;
     }
     if (emailTaken) {
@@ -165,61 +180,72 @@ export default function SignupPage() {
 
       // 1) Try sign-in first
       const si = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
-      if (!si.error && si.data?.session) {
+      let haveSession = !si.error && Boolean(si.data?.session);
+
+      // 2) If invalid creds → create the account
+      if (!haveSession) {
+        const msg = si.error?.message?.toLowerCase() ?? '';
+        const invalid = msg.includes('invalid') || msg.includes('credentials') || msg.includes('not found');
+
+        if (invalid) {
+          const su = await sb.auth.signUp({
+            email: trimmedEmail,
+            password,
+            options: {
+              data: { role: 'consumer', phone_e164: normalizedPhone },
+            },
+          });
+          if (su.error) {
+            const m = su.error.message?.toLowerCase() ?? '';
+            if (m.includes('already') && m.includes('registered')) {
+              setError('This email is already associated with an account.');
+              setLoading(false);
+              return;
+            }
+            throw su.error;
+          }
+          // Sign in immediately (email confirmation disabled)
+          const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
+          if (si2.error) {
+            const m2 = si2.error.message?.toLowerCase() ?? '';
+            if (m2.includes('confirm')) {
+              setNotice('Please confirm your email first. We just sent you a link.');
+              setLoading(false);
+              return;
+            }
+            throw si2.error;
+          }
+          haveSession = Boolean(si2.data?.session);
+        } else {
+          // Some other sign-in error
+          if (si.error) {
+            const m3 = si.error.message?.toLowerCase() ?? '';
+            if (m3.includes('confirm')) {
+              setNotice('Please confirm your email first. We just sent you a link.');
+              setLoading(false);
+              return;
+            }
+            throw si.error;
+          }
+        }
+      }
+
+      // 3) At this point we must have a session tied to the email UID.
+      if (!haveSession) throw new Error('Could not establish a session.');
+
+      // 4) If phone already verified (rare, but possible), just redirect.
+      if (phoneVerified) {
         window.location.replace('/consumer');
         return;
       }
 
-      // 2) If invalid creds → create the account
-      const msg1 = si.error?.message?.toLowerCase() ?? '';
-      const invalid =
-        msg1.includes('invalid') || msg1.includes('credentials') || msg1.includes('not found');
-
-      if (invalid) {
-        const su = await sb.auth.signUp({
-          email: trimmedEmail,
-          password,
-          options: {
-            data: { role: 'consumer', phone_e164: normalizedPhone },
-          },
-        });
-        if (su.error) {
-          // convert common "already registered" signal to friendly messages
-          const m = su.error.message?.toLowerCase() ?? '';
-          if (m.includes('already') && m.includes('registered')) {
-            setError('This email is already associated with an account.');
-            return;
-          }
-          throw su.error;
-        }
-
-        // 3) Immediately sign in (confirm-email is OFF)
-        const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
-        if (!si2.error && si2.data?.session) {
-          window.location.replace('/consumer');
-          return;
-        }
-
-        // If some legacy "confirm" state slipped through, advise
-        const msg2 = si2.error?.message?.toLowerCase() ?? '';
-        if (msg2.includes('confirm')) {
-          setNotice('Please confirm your email first. We just sent you a link.');
-          return;
-        }
-        if (si2.error) throw si2.error;
-      }
-
-      // other non-invalid errors
-      if (si.error) {
-        const m = si.error.message?.toLowerCase() ?? '';
-        if (m.includes('confirm')) {
-          setNotice('Please confirm your email first. We just sent you a link.');
-          return;
-        }
-        throw si.error;
+      // 5) Send OTP to *link* phone to this same UID (no new account)
+      const sent = await sendLinkOtp(normalizedPhone);
+      if (sent) {
+        // UX: we stay on page, show code input. User presses Verify to finish.
+        // If you want auto-focus in your UI, you can manage a ref on the code input.
       }
     } catch (e: any) {
-      // Map a couple of likely auth messages to friendlier copy
       const m = e?.message?.toLowerCase?.() ?? '';
       if (m.includes('already') && m.includes('registered')) {
         setError('This email is already associated with an account.');
