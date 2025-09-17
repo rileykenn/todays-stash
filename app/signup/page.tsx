@@ -16,7 +16,7 @@ function normalizePhoneAU(input: string) {
 type OtpState = 'idle' | 'sending_code' | 'code_sent';
 
 export default function SignupPage() {
-  // If already logged in, bounce to consumer
+  // bounce if already logged in
   useEffect(() => {
     (async () => {
       const { data } = await sb.auth.getSession();
@@ -33,38 +33,33 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
-  // removed: hasSession + explicit phoneVerified/verify flow
   const [otpState, setOtpState] = useState<OtpState>('idle');
 
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Availability flags (from your RPC)
+  // availability flags (your RPC)
   const [emailTaken, setEmailTaken] = useState(false);
   const [phoneTaken, setPhoneTaken] = useState(false);
 
   function resetAlerts() { setError(null); setNotice(null); }
 
-  const canRequestCode = useMemo(
-    () => phone.trim().length >= 8 && otpState !== 'sending_code',
-    [phone, otpState]
+  const strongPassword = useMemo(
+    () => password.length >= 6 && password === confirm,
+    [password, confirm]
   );
 
-  // Enable Sign up only when we have email, phone, strong pw, and a code typed
+  const canRequestCode = useMemo(
+    () => phone.trim().length >= 8 && strongPassword && email.trim() && otpState !== 'sending_code',
+    [phone, strongPassword, email, otpState]
+  );
+
   const canSubmit = useMemo(() => {
-    const strongPassword = password.length >= 6 && password === confirm;
     const idsOk = !emailTaken && !phoneTaken;
     const hasCode = code.trim().length >= 4;
-    return (
-      email.trim() &&
-      phone.trim() &&
-      strongPassword &&
-      idsOk &&
-      hasCode &&
-      !loading
-    );
-  }, [email, phone, password, confirm, emailTaken, phoneTaken, code, loading]);
+    return email.trim() && phone.trim() && strongPassword && idsOk && hasCode && !loading;
+  }, [email, phone, strongPassword, emailTaken, phoneTaken, code, loading]);
 
   // -------- Debounced availability check (email + phone) ----------
   useEffect(() => {
@@ -93,107 +88,97 @@ export default function SignupPage() {
     return () => clearTimeout(handle);
   }, [email, phone]);
 
-  // -------------------- OTP: use our API to start (no Supabase user yet) --------------------
+  // -------- helper: ensure we have an email session (creates or signs in) ----------
+  async function ensureEmailSession(trimmedEmail: string, pw: string) {
+    // try sign-in
+    const si = await sb.auth.signInWithPassword({ email: trimmedEmail, password: pw });
+    if (!si.error && si.data?.session) return true;
+
+    const msg = si.error?.message?.toLowerCase() ?? '';
+    const invalid = msg.includes('invalid') || msg.includes('credentials') || msg.includes('not found');
+    if (!invalid) {
+      if (si.error) throw si.error;
+      return false;
+    }
+
+    // create then sign-in
+    const su = await sb.auth.signUp({ email: trimmedEmail, password: pw, options: { data: { role: 'consumer' } } });
+    if (su.error) {
+      const m = su.error.message?.toLowerCase() ?? '';
+      if (m.includes('already') && m.includes('registered')) return false; // will sign in again below
+      throw su.error;
+    }
+    const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password: pw });
+    if (si2.error) throw si2.error;
+    return Boolean(si2.data?.session);
+  }
+
+  // -------- Get code: create/sign-in email user first, then send SMS to link phone ----------
   async function handleSendCode() {
     resetAlerts();
     if (!canRequestCode) return;
 
+    const trimmedEmail = email.trim();
     const normalized = normalizePhoneAU(phone.trim());
     setPhone(normalized);
     setCode('');
-    setOtpState('sending_code');
+
+    if (emailTaken) { setError('This email is already associated with an account.'); return; }
+    if (phoneTaken) { setError('This phone number is already associated with an account.'); return; }
 
     try {
-      const res = await fetch('/api/verify/start', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: normalized }),
-      });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j.error || 'Failed to send code.');
+      setOtpState('sending_code');
+
+      // 1) ensure email session exists (this prevents a second UID)
+      const ok = await ensureEmailSession(trimmedEmail, password);
+      if (!ok) throw new Error('Could not establish email session.');
+
+      // 2) link phone & send OTP via Supabase (twilio behind the scenes)
+      const { error: updErr } = await sb.auth.updateUser({ phone: normalized });
+      if (updErr) throw updErr;
+
       setOtpState('code_sent');
-      setNotice('We sent a code to your phone. Enter it, then press Sign up.');
+      setNotice('We sent a code. Enter it, then press Sign up.');
     } catch (e: any) {
-      setError(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
+      setError(e?.message ?? 'Failed to send code.');
       setOtpState('idle');
     }
   }
 
-  // -------------------- Submit: verify code -> create Supabase user (phone+pw) -> add email --------------------
+  // -------- Submit: verify OTP, then finish ----------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
 
-    if (password !== confirm) {
-      setError('Passwords do not match.');
-      return;
-    }
-    if (emailTaken) {
-      setError('This email is already associated with an account.');
-      return;
-    }
-    if (phoneTaken) {
-      setError('This phone number is already associated with an account.');
-      return;
-    }
-    if (otpState !== 'code_sent' || code.trim().length < 4) {
-      setError('Enter the SMS code first.');
-      return;
-    }
+    if (!canSubmit) return;
+
+    const trimmedEmail = email.trim();
+    const normalizedPhone = normalizePhoneAU(phone.trim());
+    const token = code.trim();
 
     setLoading(true);
     try {
-      const trimmedEmail = email.trim();
-      const normalizedPhone = normalizePhoneAU(phone.trim());
-      const codeTrim = code.trim();
+      // we should already have an email session, but be safe
+      const { data: sessNow } = await sb.auth.getSession();
+      if (!sessNow.session) {
+        const ok = await ensureEmailSession(trimmedEmail, password);
+        if (!ok) throw new Error('Could not establish email session.');
+      }
 
-      // 1) Verify with our Twilio API (no Supabase user yet)
-      const verifyRes = await fetch('/api/verify/check', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ phone: normalizedPhone, code: codeTrim }),
+      // verify OTP (this links the phone to the SAME UID; no new user)
+      const { error: vErr } = await sb.auth.verifyOtp({
+        phone: normalizedPhone,
+        token,
+        type: 'sms',
       });
-      const verifyJson = await verifyRes.json();
-      if (!verifyRes.ok || !verifyJson.approved) {
-        throw new Error(verifyJson.error || 'Invalid or expired code.');
-      }
+      if (vErr) throw vErr;
 
-      // 2) Create Supabase user with PHONE as the primary identity (already verified by Twilio)
-      const su = await sb.auth.signUp({ phone: normalizedPhone, password });
-      if (su.error) {
-        const m = su.error.message?.toLowerCase?.() ?? '';
-        if (m.includes('already') && m.includes('registered')) {
-          setError('This phone number is already associated with an account.');
-          setLoading(false);
-          return;
-        }
-        throw su.error;
-      }
-
-      // 3) Ensure we have a session; if not, sign in with phone+password
-      let sess = (await sb.auth.getSession()).data.session;
-      if (!sess) {
-        const si = await sb.auth.signInWithPassword({ phone: normalizedPhone, password });
-        if (si.error) throw si.error;
-        sess = si.data.session;
-      }
-
-      // 4) Add the email to this SAME user (email confirmations are disabled in your project)
-      if (trimmedEmail) {
-        const upd = await sb.auth.updateUser({ email: trimmedEmail });
-        if (upd.error) {
-          // non-fatal: account still created with phone; surface message
-          setNotice('Account created with phone. Adding email failed: ' + upd.error.message);
-        }
-      }
-
-      // 5) Done → go to consumer
+      // done
       window.location.replace('/consumer');
-      return;
     } catch (e: any) {
       const m = e?.message?.toLowerCase?.() ?? '';
-      if (m.includes('already') && m.includes('registered')) {
-        setError('This phone number is already associated with an account.');
+      if (m.includes('token') || m.includes('otp') || m.includes('code')) {
+        setError('Invalid or expired code. Tap “Get code” again.');
       } else {
         setError(e?.message ?? 'Something went wrong. Please try again.');
       }
@@ -245,7 +230,7 @@ export default function SignupPage() {
             )}
           </div>
 
-          {/* Phone + OTP (no Verify button; user will press Sign up) */}
+          {/* Phone + OTP (code field always visible, no Verify button) */}
           <div>
             <label className="block text-xs text-white/60 mb-1">Mobile phone</label>
             <div className="flex gap-2">
@@ -271,17 +256,16 @@ export default function SignupPage() {
               </p>
             )}
 
-            {otpState !== 'idle' && (
-              <div className="mt-2 flex gap-2">
-                <input
-                  value={code}
-                  onChange={(e) => setCode(e.target.value)}
-                  placeholder="Enter code"
-                  inputMode="numeric"
-                  className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
-                />
-              </div>
-            )}
+            {/* Always visible code input */}
+            <div className="mt-2 flex gap-2">
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                placeholder="Enter code"
+                inputMode="numeric"
+                className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
+              />
+            </div>
           </div>
 
           {/* Password + Confirm */}
