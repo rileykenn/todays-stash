@@ -119,7 +119,7 @@ export default function SignupPage() {
     }
   }
 
-  // SUBMIT: verify code first, THEN create the Supabase user (phone+pw), THEN add email
+  // SUBMIT: verify code → server creates confirmed user → sign in with phone+password
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
@@ -135,40 +135,41 @@ export default function SignupPage() {
     try {
       // 1) Check code with our API (Twilio Verify)
       const r = await fetch('/api/verify/check', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone: normalizedPhone, code: token }),
       });
       const j = await r.json();
       if (!j.approved) throw new Error(j.error || 'Invalid or expired code.');
 
-      // 2) Create Supabase user with PHONE (already verified by Twilio)
-      const su = await sb.auth.signUp({ phone: normalizedPhone, password });
-      if (su.error) {
-        const m = su.error.message?.toLowerCase() ?? '';
-        if (m.includes('already') && m.includes('registered')) {
-          setError('This phone number is already associated with an account.');
+      // 2) Create Supabase user server-side (phone_confirm: true)
+      const createRes = await fetch('/api/auth/create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: trimmedEmail || undefined,
+          phone: normalizedPhone,
+          password,
+        }),
+      });
+      const createJson = await createRes.json();
+      if (!createRes.ok || !createJson.ok) {
+        if (createRes.status === 409) {
+          setError(createJson.error || 'Email or phone already in use.');
           setLoading(false);
           return;
         }
-        throw su.error;
+        throw new Error(createJson.error || 'Could not create account.');
       }
 
-      // ensure session; then attach email (email confirmation is disabled)
-      let sess = (await sb.auth.getSession()).data.session;
-      if (!sess) {
-        const si = await sb.auth.signInWithPassword({ phone: normalizedPhone, password });
-        if (si.error) throw si.error;
-        sess = si.data.session;
-      }
+      // 3) Sign in on the client with PHONE + password
+      const { error: signInErr } = await sb.auth.signInWithPassword({
+        phone: normalizedPhone,
+        password,
+      });
+      if (signInErr) throw signInErr;
 
-      if (trimmedEmail) {
-        const upd = await sb.auth.updateUser({ email: trimmedEmail });
-        if (upd.error) {
-          // non-fatal
-          setNotice('Account created with phone. Adding email failed: ' + upd.error.message);
-        }
-      }
-
+      // 4) Hard redirect to reset RSC header
       window.location.replace('/consumer');
     } catch (e: any) {
       const msg = e?.message?.toLowerCase?.() ?? '';
