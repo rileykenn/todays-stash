@@ -16,7 +16,7 @@ function normalizePhoneAU(input: string) {
 type OtpState = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
 
 export default function SignupPage() {
-  // bounce if already logged in
+  // If already logged in, bounce to consumer
   useEffect(() => {
     (async () => {
       const { data } = await sb.auth.getSession();
@@ -26,12 +26,14 @@ export default function SignupPage() {
     })();
   }, []);
 
+  // -------------------- state --------------------
   const [email, setEmail] = useState('');
   const [phone, setPhone] = useState('');
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
+  const [hasSession, setHasSession] = useState(false);
   const [otpState, setOtpState] = useState<OtpState>('idle');
   const [phoneVerified, setPhoneVerified] = useState(false);
 
@@ -39,21 +41,31 @@ export default function SignupPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // availability flags
+  // Availability flags (from your RPC)
   const [emailTaken, setEmailTaken] = useState(false);
   const [phoneTaken, setPhoneTaken] = useState(false);
 
-  function resetAlerts() {
-    setError(null);
-    setNotice(null);
-  }
+  function resetAlerts() { setError(null); setNotice(null); }
+
+  // Track auth state so OTP can only be sent AFTER email user exists
+  useEffect(() => {
+    let unsub: (() => void) | undefined;
+    (async () => {
+      const { data } = await sb.auth.getSession();
+      setHasSession(Boolean(data.session));
+      const { data: sub } = sb.auth.onAuthStateChange((_e, sess) => {
+        setHasSession(Boolean(sess));
+      });
+      unsub = sub?.subscription?.unsubscribe;
+    })();
+    return () => { if (unsub) unsub(); };
+  }, []);
 
   const canRequestCode = useMemo(
-    () => phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
-    [phone, phoneVerified, otpState]
+    () => hasSession && phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
+    [hasSession, phone, phoneVerified, otpState]
   );
 
-  // Allow submit without phone verified; we'll link/send OTP after email auth.
   const canSubmit = useMemo(() => {
     const strongPassword = password.length >= 6 && password === confirm;
     const idsOk = !emailTaken && !phoneTaken;
@@ -93,9 +105,9 @@ export default function SignupPage() {
     return () => clearTimeout(handle);
   }, [email, phone]);
 
-  // -------- Send OTP by LINKING phone to current user (requires session) ----------
+  // -------------------- OTP helpers (link to existing session) --------------------
   async function sendLinkOtp(normalizedPhone: string) {
-    // Make sure we have a session (email/pw just created/signed in)
+    // Requires a session; prevents creating a separate phone user
     const { data: sess } = await sb.auth.getSession();
     if (!sess.session) {
       setError('First press “Sign up” with your email & password. Then request the code.');
@@ -106,7 +118,6 @@ export default function SignupPage() {
     try {
       const { error: updErr } = await sb.auth.updateUser({ phone: normalizedPhone });
       if (updErr) throw updErr;
-
       setOtpState('code_sent');
       setNotice('We sent a code to your phone. Enter it below and press Verify.');
       return true;
@@ -117,7 +128,6 @@ export default function SignupPage() {
     }
   }
 
-  // Button next to phone field — optional now, but still supported
   async function handleSendCode() {
     resetAlerts();
     if (!canRequestCode) return;
@@ -127,7 +137,6 @@ export default function SignupPage() {
     await sendLinkOtp(normalized);
   }
 
-  // -------- Verify OTP (keeps same UID) ----------
   async function handleVerify() {
     resetAlerts();
     if (!code || code.length < 4) return;
@@ -145,7 +154,6 @@ export default function SignupPage() {
       setPhoneVerified(true);
       setOtpState('verified');
 
-      // Redirect now that phone is verified (single account linked)
       if (typeof window !== 'undefined') {
         window.location.replace('/consumer');
       }
@@ -155,7 +163,7 @@ export default function SignupPage() {
     }
   }
 
-  // -------- Submit: email sign-in → sign-up if needed → ensure session → send OTP to link phone ----------
+  // -------------------- Submit (email auth first; then link phone) --------------------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
@@ -178,11 +186,11 @@ export default function SignupPage() {
       const trimmedEmail = email.trim();
       const normalizedPhone = normalizePhoneAU(phone.trim());
 
-      // 1) Try sign-in first
+      // 1) Try sign-in with email/pw
       const si = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
       let haveSession = !si.error && Boolean(si.data?.session);
 
-      // 2) If invalid creds → create the account
+      // 2) If invalid → sign up then sign in
       if (!haveSession) {
         const msg = si.error?.message?.toLowerCase() ?? '';
         const invalid = msg.includes('invalid') || msg.includes('credentials') || msg.includes('not found');
@@ -191,9 +199,7 @@ export default function SignupPage() {
           const su = await sb.auth.signUp({
             email: trimmedEmail,
             password,
-            options: {
-              data: { role: 'consumer', phone_e164: normalizedPhone },
-            },
+            options: { data: { role: 'consumer', phone_e164: normalizedPhone } },
           });
           if (su.error) {
             const m = su.error.message?.toLowerCase() ?? '';
@@ -204,7 +210,6 @@ export default function SignupPage() {
             }
             throw su.error;
           }
-          // Sign in immediately (email confirmation disabled)
           const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
           if (si2.error) {
             const m2 = si2.error.message?.toLowerCase() ?? '';
@@ -216,35 +221,28 @@ export default function SignupPage() {
             throw si2.error;
           }
           haveSession = Boolean(si2.data?.session);
-        } else {
-          // Some other sign-in error
-          if (si.error) {
-            const m3 = si.error.message?.toLowerCase() ?? '';
-            if (m3.includes('confirm')) {
-              setNotice('Please confirm your email first. We just sent you a link.');
-              setLoading(false);
-              return;
-            }
-            throw si.error;
+        } else if (si.error) {
+          const m3 = si.error.message?.toLowerCase() ?? '';
+          if (m3.includes('confirm')) {
+            setNotice('Please confirm your email first. We just sent you a link.');
+            setLoading(false);
+            return;
           }
+          throw si.error;
         }
       }
 
-      // 3) At this point we must have a session tied to the email UID.
       if (!haveSession) throw new Error('Could not establish a session.');
 
-      // 4) If phone already verified (rare, but possible), just redirect.
+      // 3) If phone already verified, just go
       if (phoneVerified) {
         window.location.replace('/consumer');
         return;
       }
 
-      // 5) Send OTP to *link* phone to this same UID (no new account)
-      const sent = await sendLinkOtp(normalizedPhone);
-      if (sent) {
-        // UX: we stay on page, show code input. User presses Verify to finish.
-        // If you want auto-focus in your UI, you can manage a ref on the code input.
-      }
+      // 4) Send OTP to link phone to this same UID (no new account)
+      await sendLinkOtp(normalizedPhone);
+      // User will enter code and hit Verify to finish
     } catch (e: any) {
       const m = e?.message?.toLowerCase?.() ?? '';
       if (m.includes('already') && m.includes('registered')) {
@@ -274,6 +272,7 @@ export default function SignupPage() {
     }
   }
 
+  // -------------------- UI --------------------
   return (
     <main className="mx-auto max-w-screen-sm px-4 py-8 text-white">
       <h1 className="text-3xl font-bold tracking-tight">Create your account</h1>
@@ -316,6 +315,7 @@ export default function SignupPage() {
                 type="button"
                 onClick={handleSendCode}
                 disabled={!canRequestCode}
+                title={!hasSession ? 'Sign up with email & password first' : undefined}
                 className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
               >
                 {otpState === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
