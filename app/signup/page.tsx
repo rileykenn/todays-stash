@@ -39,24 +39,59 @@ export default function SignupPage() {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // availability flags
+  const [emailTaken, setEmailTaken] = useState(false);
+  const [phoneTaken, setPhoneTaken] = useState(false);
+
+  function resetAlerts() { setError(null); setNotice(null); }
+
   const canRequestCode = useMemo(
     () => phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
     [phone, phoneVerified, otpState]
   );
 
   const canSubmit = useMemo(() => {
+    const strongPassword = password.length >= 6 && password === confirm;
+    const idsOk = !emailTaken && !phoneTaken;
     return (
       email.trim() &&
       phone.trim() &&
-      password.length >= 6 &&
-      password === confirm &&
+      strongPassword &&
       phoneVerified &&
+      idsOk &&
       !loading
     );
-  }, [email, phone, password, confirm, phoneVerified, loading]);
+  }, [email, phone, password, confirm, phoneVerified, emailTaken, phoneTaken, loading]);
 
-  function resetAlerts() { setError(null); setNotice(null); }
+  // -------- Debounced availability check (email + phone) ----------
+  useEffect(() => {
+    const handle = setTimeout(async () => {
+      const e = email.trim();
+      const p = normalizePhoneAU(phone.trim());
 
+      if (!e && !p) {
+        setEmailTaken(false);
+        setPhoneTaken(false);
+        return;
+      }
+      try {
+        const { data, error } = await sb.rpc('check_identifier_available', {
+          p_email: e || null,
+          p_phone: p || null,
+        });
+        if (!error && data) {
+          setEmailTaken(Boolean(data.email_taken));
+          setPhoneTaken(Boolean(data.phone_taken));
+        }
+      } catch {
+        // ignore; don't block UX on check errors
+      }
+    }, 350); // small debounce
+
+    return () => clearTimeout(handle);
+  }, [email, phone]);
+
+  // -------- OTP flow ----------
   async function handleSendCode() {
     resetAlerts();
     if (!canRequestCode) return;
@@ -101,6 +136,7 @@ export default function SignupPage() {
     }
   }
 
+  // -------- Submit (sign-in → sign-up → sign-in) ----------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
@@ -113,11 +149,22 @@ export default function SignupPage() {
       setError('Please verify your phone number first.');
       return;
     }
+    if (emailTaken) {
+      setError('This email is already associated with an account.');
+      return;
+    }
+    if (phoneTaken) {
+      setError('This phone number is already associated with an account.');
+      return;
+    }
 
     setLoading(true);
     try {
+      const trimmedEmail = email.trim();
+      const normalizedPhone = normalizePhoneAU(phone.trim());
+
       // 1) Try sign-in first
-      const si = await sb.auth.signInWithPassword({ email: email.trim(), password });
+      const si = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
       if (!si.error && si.data?.session) {
         window.location.replace('/consumer');
         return;
@@ -130,36 +177,57 @@ export default function SignupPage() {
 
       if (invalid) {
         const su = await sb.auth.signUp({
-          email: email.trim(),
+          email: trimmedEmail,
           password,
           options: {
-            data: { role: 'consumer', phone_e164: normalizePhoneAU(phone.trim()) },
-            // no emailRedirectTo needed when confirm email is OFF
+            data: { role: 'consumer', phone_e164: normalizedPhone },
           },
         });
-        if (su.error) throw su.error;
+        if (su.error) {
+          // convert common "already registered" signal to friendly messages
+          const m = su.error.message?.toLowerCase() ?? '';
+          if (m.includes('already') && m.includes('registered')) {
+            setError('This email is already associated with an account.');
+            return;
+          }
+          throw su.error;
+        }
 
-        // 3) Immediately sign in (since confirm email is OFF)
-        const si2 = await sb.auth.signInWithPassword({ email: email.trim(), password });
+        // 3) Immediately sign in (confirm-email is OFF)
+        const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
         if (!si2.error && si2.data?.session) {
           window.location.replace('/consumer');
           return;
         }
 
-        // 4) If the second sign-in still says "confirm", THEN show the notice
+        // If some legacy "confirm" state slipped through, advise
         const msg2 = si2.error?.message?.toLowerCase() ?? '';
         if (msg2.includes('confirm')) {
           setNotice('Please confirm your email first. We just sent you a link.');
           return;
         }
-
         if (si2.error) throw si2.error;
       }
 
-      // If it wasn't invalid and wasn't success, surface the real error
-      if (si.error) throw si.error;
+      // other non-invalid errors
+      if (si.error) {
+        const m = si.error.message?.toLowerCase() ?? '';
+        if (m.includes('confirm')) {
+          setNotice('Please confirm your email first. We just sent you a link.');
+          return;
+        }
+        throw si.error;
+      }
     } catch (e: any) {
-      setError(e?.message ?? 'Something went wrong. Please try again.');
+      // Map a couple of likely auth messages to friendlier copy
+      const m = e?.message?.toLowerCase?.() ?? '';
+      if (m.includes('already') && m.includes('registered')) {
+        setError('This email is already associated with an account.');
+      } else if (m.includes('phone')) {
+        setError('This phone number is already associated with an account.');
+      } else {
+        setError(e?.message ?? 'Something went wrong. Please try again.');
+      }
     } finally {
       setLoading(false);
     }
@@ -200,6 +268,11 @@ export default function SignupPage() {
               placeholder="you@example.com"
               className="w-full rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
             />
+            {email && emailTaken && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">
+                This email is already associated with an account.
+              </p>
+            )}
           </div>
 
           {/* Phone + OTP */}
@@ -222,6 +295,11 @@ export default function SignupPage() {
                 {otpState === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
               </button>
             </div>
+            {phone && phoneTaken && (
+              <p className="mt-1 text-xs text-[color:rgb(248_113_113)]">
+                This phone number is already associated with an account.
+              </p>
+            )}
 
             {otpState !== 'idle' && !phoneVerified && (
               <div className="mt-2 flex gap-2">
