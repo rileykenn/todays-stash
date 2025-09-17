@@ -13,7 +13,7 @@ function normalizePhoneAU(input: string) {
   return raw;
 }
 
-type OtpState = 'idle' | 'sending_code' | 'code_sent' | 'verifying' | 'verified';
+type OtpState = 'idle' | 'sending_code' | 'code_sent';
 
 export default function SignupPage() {
   // If already logged in, bounce to consumer
@@ -33,9 +33,8 @@ export default function SignupPage() {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
 
-  const [hasSession, setHasSession] = useState(false);
+  // removed: hasSession + explicit phoneVerified/verify flow
   const [otpState, setOtpState] = useState<OtpState>('idle');
-  const [phoneVerified, setPhoneVerified] = useState(false);
 
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -47,36 +46,25 @@ export default function SignupPage() {
 
   function resetAlerts() { setError(null); setNotice(null); }
 
-  // Track auth state so OTP can only be sent AFTER email user exists
-  useEffect(() => {
-    let unsub: (() => void) | undefined;
-    (async () => {
-      const { data } = await sb.auth.getSession();
-      setHasSession(Boolean(data.session));
-      const { data: sub } = sb.auth.onAuthStateChange((_e, sess) => {
-        setHasSession(Boolean(sess));
-      });
-      unsub = sub?.subscription?.unsubscribe;
-    })();
-    return () => { if (unsub) unsub(); };
-  }, []);
-
   const canRequestCode = useMemo(
-    () => hasSession && phone.trim().length >= 8 && !phoneVerified && otpState !== 'sending_code',
-    [hasSession, phone, phoneVerified, otpState]
+    () => phone.trim().length >= 8 && otpState !== 'sending_code',
+    [phone, otpState]
   );
 
+  // Enable Sign up only when we have email, phone, strong pw, and a code typed
   const canSubmit = useMemo(() => {
     const strongPassword = password.length >= 6 && password === confirm;
     const idsOk = !emailTaken && !phoneTaken;
+    const hasCode = code.trim().length >= 4;
     return (
       email.trim() &&
       phone.trim() &&
       strongPassword &&
       idsOk &&
+      hasCode &&
       !loading
     );
-  }, [email, phone, password, confirm, emailTaken, phoneTaken, loading]);
+  }, [email, phone, password, confirm, emailTaken, phoneTaken, code, loading]);
 
   // -------- Debounced availability check (email + phone) ----------
   useEffect(() => {
@@ -105,65 +93,33 @@ export default function SignupPage() {
     return () => clearTimeout(handle);
   }, [email, phone]);
 
-  // -------------------- OTP helpers (link to existing session) --------------------
-  async function sendLinkOtp(normalizedPhone: string) {
-    // Requires a session; prevents creating a separate phone user
-    const { data: sess } = await sb.auth.getSession();
-    if (!sess.session) {
-      setError('First press “Sign up” with your email & password. Then request the code.');
-      return false;
-    }
-
-    setOtpState('sending_code');
-    try {
-      const { error: updErr } = await sb.auth.updateUser({ phone: normalizedPhone });
-      if (updErr) throw updErr;
-      setOtpState('code_sent');
-      setNotice('We sent a code to your phone. Enter it below and press Verify.');
-      return true;
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
-      setOtpState('idle');
-      return false;
-    }
-  }
-
+  // -------------------- OTP: use our API to start (no Supabase user yet) --------------------
   async function handleSendCode() {
     resetAlerts();
     if (!canRequestCode) return;
+
     const normalized = normalizePhoneAU(phone.trim());
     setPhone(normalized);
     setCode('');
-    await sendLinkOtp(normalized);
-  }
+    setOtpState('sending_code');
 
-  async function handleVerify() {
-    resetAlerts();
-    if (!code || code.length < 4) return;
-
-    const normalized = normalizePhoneAU(phone.trim());
-    setOtpState('verifying');
     try {
-      const { data, error } = await sb.auth.verifyOtp({
-        phone: normalized,
-        token: code.trim(),
-        type: 'sms',
+      const res = await fetch('/api/verify/start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: normalized }),
       });
-      if (error) throw error;
-
-      setPhoneVerified(true);
-      setOtpState('verified');
-
-      if (typeof window !== 'undefined') {
-        window.location.replace('/consumer');
-      }
-    } catch (e: any) {
-      setError(e?.message ?? 'Failed to verify code.');
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || 'Failed to send code.');
       setOtpState('code_sent');
+      setNotice('We sent a code to your phone. Enter it, then press Sign up.');
+    } catch (e: any) {
+      setError(e?.message ?? 'Failed to send code. Check +61 format and Twilio config.');
+      setOtpState('idle');
     }
   }
 
-  // -------------------- Submit (email auth first; then link phone) --------------------
+  // -------------------- Submit: verify code -> create Supabase user (phone+pw) -> add email --------------------
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     resetAlerts();
@@ -180,74 +136,63 @@ export default function SignupPage() {
       setError('This phone number is already associated with an account.');
       return;
     }
+    if (otpState !== 'code_sent' || code.trim().length < 4) {
+      setError('Enter the SMS code first.');
+      return;
+    }
 
     setLoading(true);
     try {
       const trimmedEmail = email.trim();
       const normalizedPhone = normalizePhoneAU(phone.trim());
+      const codeTrim = code.trim();
 
-      // 1) Try sign-in with email/pw
-      const si = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
-      let haveSession = !si.error && Boolean(si.data?.session);
+      // 1) Verify with our Twilio API (no Supabase user yet)
+      const verifyRes = await fetch('/api/verify/check', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone: normalizedPhone, code: codeTrim }),
+      });
+      const verifyJson = await verifyRes.json();
+      if (!verifyRes.ok || !verifyJson.approved) {
+        throw new Error(verifyJson.error || 'Invalid or expired code.');
+      }
 
-      // 2) If invalid → sign up then sign in
-      if (!haveSession) {
-        const msg = si.error?.message?.toLowerCase() ?? '';
-        const invalid = msg.includes('invalid') || msg.includes('credentials') || msg.includes('not found');
+      // 2) Create Supabase user with PHONE as the primary identity (already verified by Twilio)
+      const su = await sb.auth.signUp({ phone: normalizedPhone, password });
+      if (su.error) {
+        const m = su.error.message?.toLowerCase?.() ?? '';
+        if (m.includes('already') && m.includes('registered')) {
+          setError('This phone number is already associated with an account.');
+          setLoading(false);
+          return;
+        }
+        throw su.error;
+      }
 
-        if (invalid) {
-          const su = await sb.auth.signUp({
-            email: trimmedEmail,
-            password,
-            options: { data: { role: 'consumer', phone_e164: normalizedPhone } },
-          });
-          if (su.error) {
-            const m = su.error.message?.toLowerCase() ?? '';
-            if (m.includes('already') && m.includes('registered')) {
-              setError('This email is already associated with an account.');
-              setLoading(false);
-              return;
-            }
-            throw su.error;
-          }
-          const si2 = await sb.auth.signInWithPassword({ email: trimmedEmail, password });
-          if (si2.error) {
-            const m2 = si2.error.message?.toLowerCase() ?? '';
-            if (m2.includes('confirm')) {
-              setNotice('Please confirm your email first. We just sent you a link.');
-              setLoading(false);
-              return;
-            }
-            throw si2.error;
-          }
-          haveSession = Boolean(si2.data?.session);
-        } else if (si.error) {
-          const m3 = si.error.message?.toLowerCase() ?? '';
-          if (m3.includes('confirm')) {
-            setNotice('Please confirm your email first. We just sent you a link.');
-            setLoading(false);
-            return;
-          }
-          throw si.error;
+      // 3) Ensure we have a session; if not, sign in with phone+password
+      let sess = (await sb.auth.getSession()).data.session;
+      if (!sess) {
+        const si = await sb.auth.signInWithPassword({ phone: normalizedPhone, password });
+        if (si.error) throw si.error;
+        sess = si.data.session;
+      }
+
+      // 4) Add the email to this SAME user (email confirmations are disabled in your project)
+      if (trimmedEmail) {
+        const upd = await sb.auth.updateUser({ email: trimmedEmail });
+        if (upd.error) {
+          // non-fatal: account still created with phone; surface message
+          setNotice('Account created with phone. Adding email failed: ' + upd.error.message);
         }
       }
 
-      if (!haveSession) throw new Error('Could not establish a session.');
-
-      // 3) If phone already verified, just go
-      if (phoneVerified) {
-        window.location.replace('/consumer');
-        return;
-      }
-
-      // 4) Send OTP to link phone to this same UID (no new account)
-      await sendLinkOtp(normalizedPhone);
-      // User will enter code and hit Verify to finish
+      // 5) Done → go to consumer
+      window.location.replace('/consumer');
+      return;
     } catch (e: any) {
       const m = e?.message?.toLowerCase?.() ?? '';
       if (m.includes('already') && m.includes('registered')) {
-        setError('This email is already associated with an account.');
-      } else if (m.includes('phone')) {
         setError('This phone number is already associated with an account.');
       } else {
         setError(e?.message ?? 'Something went wrong. Please try again.');
@@ -300,7 +245,7 @@ export default function SignupPage() {
             )}
           </div>
 
-          {/* Phone + OTP */}
+          {/* Phone + OTP (no Verify button; user will press Sign up) */}
           <div>
             <label className="block text-xs text-white/60 mb-1">Mobile phone</label>
             <div className="flex gap-2">
@@ -315,10 +260,9 @@ export default function SignupPage() {
                 type="button"
                 onClick={handleSendCode}
                 disabled={!canRequestCode}
-                title={!hasSession ? 'Sign up with email & password first' : undefined}
                 className="rounded-xl px-4 py-2 bg-white/10 border border-white/10 text-sm font-semibold hover:bg-white/15 disabled:opacity-60"
               >
-                {otpState === 'sending_code' ? 'Sending…' : phoneVerified ? 'Verified' : 'Get code'}
+                {otpState === 'sending_code' ? 'Sending…' : otpState === 'code_sent' ? 'Code sent' : 'Get code'}
               </button>
             </div>
             {phone && phoneTaken && (
@@ -327,7 +271,7 @@ export default function SignupPage() {
               </p>
             )}
 
-            {otpState !== 'idle' && !phoneVerified && (
+            {otpState !== 'idle' && (
               <div className="mt-2 flex gap-2">
                 <input
                   value={code}
@@ -336,19 +280,7 @@ export default function SignupPage() {
                   inputMode="numeric"
                   className="flex-1 rounded-xl bg-black/20 border border-white/10 px-3 py-2 text-sm placeholder:text-white/40 focus:outline-none focus:border-[var(--color-brand-600)]"
                 />
-                <button
-                  type="button"
-                  onClick={handleVerify}
-                  disabled={otpState === 'verifying' || !code}
-                  className="rounded-xl px-4 py-2 bg-[var(--color-brand-600)] text-sm font-semibold hover:brightness-110 disabled:opacity-60"
-                >
-                  {otpState === 'verifying' ? 'Verifying…' : 'Verify'}
-                </button>
               </div>
-            )}
-
-            {phoneVerified && (
-              <p className="mt-1 text-xs text-[color:rgb(16_185_129)]">Phone number verified.</p>
             )}
           </div>
 
