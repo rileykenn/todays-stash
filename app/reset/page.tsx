@@ -4,53 +4,65 @@ import { FormEvent, useState } from 'react';
 import { sb as supabase } from '@/lib/supabaseBrowser';
 
 type Step = 'request' | 'verify' | 'set' | 'done';
+type Channel = 'email' | 'sms';
 
 export default function ResetPage() {
   const [step, setStep] = useState<Step>('request');
-  const [identifier, setIdentifier] = useState('');        // email or phone
-  const [channel, setChannel] = useState<'email'|'sms'>();
+  const [identifier, setIdentifier] = useState(''); // email or phone (+E.164)
+  const [channel, setChannel] = useState<Channel | null>(null);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string|null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   const looksLikePhone = (v: string) => /^\+?\d{8,15}$/.test(v.trim());
   const looksLikeEmail = (v: string) => /\S+@\S+\.\S+/.test(v.trim());
 
-  async function handleRequest(e: FormEvent) {
+  async function onRequestCode(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
     const id = identifier.trim();
-    if (!looksLikeEmail(id) && !looksLikePhone(id)) {
-      setError('Enter a valid email or phone (E.164 like +15551234567).');
+    const isEmail = looksLikeEmail(id);
+    const isPhone = looksLikePhone(id);
+
+    if (!isEmail && !isPhone) {
+      setError('Enter a valid email or phone in E.164 format (e.g. +15551234567).');
       return;
     }
 
     setLoading(true);
     try {
-      if (looksLikeEmail(id)) {
+      if (isEmail) {
+        // Send EMAIL OTP (do not create new users, no redirect link)
         const { error } = await supabase.auth.signInWithOtp({
           email: id,
-          options: { emailRedirectTo: undefined }, // no redirect, we verify with code here
+          options: {
+            shouldCreateUser: false,
+            emailRedirectTo: undefined,
+          },
         });
         if (error) throw error;
         setChannel('email');
       } else {
-        const { error } = await supabase.auth.signInWithOtp({ phone: id });
+        // Send SMS OTP (do not create new users)
+        const { error } = await supabase.auth.signInWithOtp({
+          phone: id.startsWith('+') ? id : `+${id}`, // small nudge if they forgot '+'
+          options: { shouldCreateUser: false },
+        });
         if (error) throw error;
         setChannel('sms');
       }
       setStep('verify');
     } catch (err: any) {
-      setError(err.message ?? 'Could not send code');
+      setError(err?.message ?? 'Could not send the code.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleVerify(e: FormEvent) {
+  async function onVerifyCode(e: FormEvent) {
     e.preventDefault();
     setError(null);
     if (!channel) return;
@@ -60,39 +72,33 @@ export default function ResetPage() {
       if (channel === 'email') {
         const { error } = await supabase.auth.verifyOtp({
           type: 'email',
-          email: identifier,
+          email: identifier.trim(),
           token: code.trim(),
         });
         if (error) throw error;
       } else {
         const { error } = await supabase.auth.verifyOtp({
           type: 'sms',
-          phone: identifier,
+          phone: identifier.trim().startsWith('+') ? identifier.trim() : `+${identifier.trim()}`,
           token: code.trim(),
         });
         if (error) throw error;
       }
-      // At this point the user has a session and we can set a new password
+      // user now has a session; allow setting a new password
       setStep('set');
     } catch (err: any) {
-      setError(err.message ?? 'Invalid code');
+      setError(err?.message ?? 'Invalid code.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function handleSetPassword(e: FormEvent) {
+  async function onSetPassword(e: FormEvent) {
     e.preventDefault();
     setError(null);
 
-    if (password.length < 8) {
-      setError('Password must be at least 8 characters.');
-      return;
-    }
-    if (password !== confirm) {
-      setError('Passwords do not match.');
-      return;
-    }
+    if (password.length < 8) return setError('Password must be at least 8 characters.');
+    if (password !== confirm) return setError('Passwords do not match.');
 
     setLoading(true);
     try {
@@ -100,7 +106,7 @@ export default function ResetPage() {
       if (error) throw error;
       setStep('done');
     } catch (err: any) {
-      setError(err.message ?? 'Could not set password');
+      setError(err?.message ?? 'Could not set password.');
     } finally {
       setLoading(false);
     }
@@ -117,16 +123,19 @@ export default function ResetPage() {
       )}
 
       {step === 'request' && (
-        <form onSubmit={handleRequest} className="space-y-4">
+        <form onSubmit={onRequestCode} className="space-y-4">
           <label className="text-sm">Email or phone</label>
           <input
             className="w-full rounded-xl border px-3 py-2"
             placeholder="you@example.com or +15551234567"
             value={identifier}
             onChange={(e) => setIdentifier(e.target.value)}
-            inputMode="email"
             autoComplete="username"
+            inputMode="email"
           />
+          <p className="text-xs text-neutral-500">
+            For phone, use international E.164 format starting with “+”.
+          </p>
           <button
             type="submit"
             className="w-full rounded-xl bg-black px-4 py-2 font-medium text-white disabled:opacity-60"
@@ -138,10 +147,9 @@ export default function ResetPage() {
       )}
 
       {step === 'verify' && (
-        <form onSubmit={handleVerify} className="space-y-4 mt-4">
+        <form onSubmit={onVerifyCode} className="space-y-4 mt-4">
           <p className="text-sm">
-            We just sent a code to your {channel === 'sms' ? 'phone' : 'email'}.
-            Enter it below.
+            We sent a {channel === 'sms' ? 'text' : 'code email'} to your {channel}.
           </p>
           <input
             className="w-full rounded-xl border px-3 py-2 tracking-widest"
@@ -161,7 +169,7 @@ export default function ResetPage() {
       )}
 
       {step === 'set' && (
-        <form onSubmit={handleSetPassword} className="space-y-4 mt-4">
+        <form onSubmit={onSetPassword} className="space-y-4 mt-4">
           <label className="text-sm">New password</label>
           <input
             type="password"
@@ -190,7 +198,7 @@ export default function ResetPage() {
 
       {step === 'done' && (
         <div className="mt-6 space-y-4">
-          <p>All set. Go sign in with your new password.</p>
+          <p>All set. Sign in with your new password.</p>
           <a href="/signin" className="inline-block rounded-xl border px-4 py-2">
             Back to sign in
           </a>
